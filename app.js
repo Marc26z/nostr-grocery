@@ -42,6 +42,9 @@ import {
 } from "./src/core.js";
 import { SimplePool } from "./vendor/nostr.js";
 import { qrSvg } from "./vendor/qr.js";
+import { createMarmotAdapter } from "./src/marmot.js";
+import { wrapIdentityAsSigner } from "./src/marmot-identity.js";
+
 
 /* ------------------------------- config --------------------------------- */
 
@@ -79,6 +82,12 @@ const state = {
   extraFilters: [], // targeted filters for imported invite links
   openListId: null,
   publishTimers: new Map(),
+  marmot: null,
+  marmotGroups: new Map(),
+  activeChatGroup: null,
+  chatSub: null,
+  chatMessages: [],
+  historyGen: null,
 };
 
 /* ----------------------------- persistence ------------------------------ */
@@ -241,6 +250,7 @@ function adoptIdentity(id) {
   store.del("gl_sk");
   store.del("gl_ext");
   store.del("gl_nip46");
+  initMarmot();
   startApp();
 }
 
@@ -271,6 +281,7 @@ async function unlockWithPasskey() {
   try {
     const secretKey = await passkeySecret({ credentialId: saved.id });
     adoptIdentity(createPasskeyIdentity(secretKey, saved.id));
+    initMarmot();
   } catch (e) {
     if (e?.name !== "NotAllowedError" && e?.name !== "AbortError") {
       passkeyError(e.message || "Could not unlock with your passkey");
@@ -300,6 +311,7 @@ function startApp() {
   importInviteFromHash();
   connect();
   startConnPoll();
+  initMarmot();
 
   scheduleRender();
 }
@@ -393,11 +405,16 @@ function connect() {
   const filters = [
     { kinds: [LIST_KIND], "#p": [me] },
     { kinds: [LIST_KIND], authors: [me] },
+    // Gift-wrapped Marmot chat invites (kind 1059) addressed to us.
+    { kinds: [1059], "#p": [me] },
     ...state.extraFilters,
   ];
   setConn("connecting", "Connecting…");
   state.sub = state.pool.subscribeMany(RELAYS, filters, {
-    onevent: (ev) => ingest(ev),
+    onevent: (ev) => {
+      if (ev.kind === 1059) handleGiftWrap(ev);
+      else ingest(ev);
+    },
     onclose: () => {},
   });
 }
@@ -702,6 +719,8 @@ async function shareWith(input) {
   renderDetail(l); // reflect the new member immediately
   await publishGrant(l, recipient); // hand them the key
   await publishList(l); // add their p tag so they discover it
+  const group = state.marmotGroups.get(l.id);
+  if (group) inviteMissingMembers(l.id, group, [recipient]); // pull them into the chat if it exists
 }
 
 function inviteLink(l) {
@@ -943,7 +962,7 @@ function bindUI() {
     if (e.target.dataset.close !== undefined) closeModal();
   });
   document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") closeModal();
+    if (e.key === "Escape") { closeModal(); closeChatModal(); }
   });
 
   // login
@@ -993,6 +1012,23 @@ function bindUI() {
     render();
   });
   $("#share-btn").addEventListener("click", openShareModal);
+  // chat
+  const chatBtn = $("#chat-btn");
+  if (chatBtn) {
+    chatBtn.addEventListener("click", () => {
+      openChatModal();
+    });
+  }
+  const chatClose = document.querySelectorAll("[data-close-chat]");
+  chatClose.forEach(b => b.addEventListener("click", closeChatModal));
+  const chatForm = $("#chat-form");
+  if (chatForm) {
+    chatForm.addEventListener("submit", (e) => {
+      e.preventDefault();
+      sendChatMessage();
+    });
+  }
+
   $("#list-title").addEventListener("input", (e) => {
     const l = state.lists.get(state.openListId);
     if (!l || !l.data) return;
@@ -1193,3 +1229,311 @@ function bytesToHex(bytes) {
 }
 
 document.addEventListener("DOMContentLoaded", boot);
+
+async function initMarmot() {
+  if (!state.identity || state.marmot) return;
+  const signer = wrapIdentityAsSigner(state.identity);
+  state.marmot = createMarmotAdapter(signer, state.pool, RELAYS);
+  pollInvites();
+  // Publishing a key package signs an event, which prompts an interactive
+  // signer. Keep it off the login critical path: publish it lazily, on the
+  // first user interaction or when the chat is opened.
+  document.addEventListener("pointerdown", scheduleKeyPackage, { once: true, capture: true });
+  document.addEventListener("keydown", scheduleKeyPackage, { once: true, capture: true });
+}
+
+let keyPackageScheduled = false;
+
+function scheduleKeyPackage() {
+  if (keyPackageScheduled) return;
+  keyPackageScheduled = true;
+  ensureKeyPackage();
+}
+
+// Advertise this device so list owners can invite us to a chat.
+async function ensureKeyPackage() {
+  if (!state.marmot) return;
+  try {
+    const pkgs = await state.marmot.client.keyPackages.list();
+    if (!pkgs.some((p) => Array.isArray(p.published) && p.published.length)) {
+      await state.marmot.client.keyPackages.create({ relays: RELAYS });
+    }
+  } catch (e) {
+    console.error("marmot key package", e);
+  }
+}
+
+// A gift-wrapped Welcome (kind 1059) addressed to us: decrypt and join the group.
+async function handleGiftWrap(ev) {
+  if (!state.marmot) return;
+  try {
+    const isNew = await state.marmot.client.invites.ingestEvent(ev);
+    if (!isNew) return;
+    const unread = await state.marmot.client.invites.decryptGiftWraps();
+    let joined = false;
+    for (const inv of unread) {
+      try {
+        await state.marmot.client.joinGroupFromWelcome({ welcomeRumor: inv });
+        joined = true;
+      } catch (e) {
+        console.error("join group", e);
+      }
+      try {
+        await state.marmot.client.invites.markAsRead(inv.id);
+      } catch (_) {}
+    }
+    if (joined && state.openListId && !$("#chat-modal")?.hidden) loadChatGroup();
+  } catch (e) {
+    console.error("invite", e);
+  }
+}
+
+// Pull any invites we missed while offline (also covers the startup race
+// before the live subscription is ready).
+async function pollInvites() {
+  if (!state.marmot) return;
+  try {
+    const evs = await state.pool.list(RELAYS, [
+      { kinds: [1059], "#p": [state.identity.pubkey], limit: 20 },
+    ]);
+    for (const ev of evs) await handleGiftWrap(ev);
+  } catch (_) {}
+}
+
+async function fetchKeyPackage(pubkey) {
+  try {
+    const events = await state.pool.list(RELAYS, [
+      { kinds: [30443, 443], authors: [pubkey], limit: 5 },
+    ]);
+    const usable = events
+      .filter((e) => e.tags.some((t) => t[0] === "i"))
+      .sort((a, b) => b.created_at - a.created_at);
+    return usable[0] || null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function readInvited(listId) {
+  try {
+    const raw = localStorage.getItem("gl_marmot_invited_" + listId);
+    return raw ? new Set(JSON.parse(raw)) : new Set();
+  } catch (_) {
+    return new Set();
+  }
+}
+
+function writeInvited(listId, set) {
+  try {
+    localStorage.setItem("gl_marmot_invited_" + listId, JSON.stringify([...set]));
+  } catch (_) {}
+}
+
+// Invite any list member who isn't already in the group. Owners only — only an
+// admin can commit membership changes. Members who publish their key package
+// later get picked up the next time the owner opens the chat.
+async function inviteMissingMembers(listId, group, members) {
+  const me = state.identity.pubkey;
+  const invited = readInvited(listId);
+  const targets = [...new Set(members)].filter((m) => m && m !== me && !invited.has(m));
+  for (const member of targets) {
+    try {
+      const kp = await fetchKeyPackage(member);
+      if (!kp) continue;
+      await group.inviteByKeyPackageEvent(kp);
+      invited.add(member);
+      writeInvited(listId, invited);
+    } catch (e) {
+      console.error("invite member", member, e);
+    }
+  }
+}
+
+async function getOrCreateListChatGroup(listId, members = []) {
+  if (!state.marmot) return null;
+  const name = "chat_" + listId;
+  const l = state.lists.get(listId);
+  const owner = l?.owner || l?.author || null;
+  const isOwner = !owner || owner === state.identity.pubkey;
+  const found = state.marmotGroups.get(listId);
+  if (found) {
+    if (isOwner) inviteMissingMembers(listId, found, members);
+    return found;
+  }
+  try {
+    const groups = await state.marmot.client.groups.loadAll();
+    for (const g of groups) {
+      if (g.groupData?.name === name) {
+        state.marmotGroups.set(listId, g);
+        if (isOwner) inviteMissingMembers(listId, g, members);
+        return g;
+      }
+    }
+  } catch (_) {}
+  // Only the list owner starts the group; everyone else joins from the invite.
+  if (!isOwner) return null;
+  let group;
+  try {
+    group = await state.marmot.client.groups.create(name, { relays: RELAYS });
+  } catch (e) {
+    console.error("Failed to create chat group", e);
+    return null;
+  }
+  state.marmotGroups.set(listId, group);
+  inviteMissingMembers(listId, group, members);
+  return group;
+}
+
+function nostrGroupIdHex(group) {
+  const id = group?.groupData?.nostrGroupId;
+  if (!id) return null;
+  return bytesToHex(id instanceof Uint8Array ? id : new Uint8Array(id));
+}
+
+function formatNpubShort(hex) {
+  try {
+    return shortNpub(hex);
+  } catch (e) {
+    return (hex || "").slice(0, 8);
+  }
+}
+
+function openChatModal() {
+  const el = $("#chat-modal");
+  if (el) el.hidden = false;
+  state.chatMessages = [];
+  const list = state.lists.get(state.openListId);
+  if (list) {
+    $("#chat-title").textContent = list.data?.name || list.name || "List chat";
+  }
+  ensureKeyPackage();
+  renderChat();
+  loadChatGroup();
+}
+
+function closeChatModal() {
+  const el = $("#chat-modal");
+  if (el) el.hidden = true;
+  state.activeChatGroup = null;
+  stopChatIngest();
+}
+
+function stopChatIngest() {
+  if (state.chatSub) {
+    try {
+      if (typeof state.chatSub.unsubscribe === "function") state.chatSub.unsubscribe();
+      else if (typeof state.chatSub.close === "function") state.chatSub.close();
+    } catch (_) {}
+    state.chatSub = null;
+  }
+  if (state.historyGen) {
+    try {
+      state.historyGen.return?.();
+    } catch (_) {}
+    state.historyGen = null;
+  }
+}
+
+async function loadChatGroup() {
+  if (!state.openListId || !state.marmot) return;
+  const list = state.lists.get(state.openListId);
+  const members = list?.members ? Array.from(list.members) : [];
+  const group = await getOrCreateListChatGroup(state.openListId, members);
+  if (!group) {
+    state.activeChatGroup = null;
+    state.chatMessages = [];
+    renderChat();
+    return;
+  }
+  state.activeChatGroup = group;
+
+  // Receive new group messages and feed them to MLS (which also records them).
+  stopChatIngest();
+  const h = nostrGroupIdHex(group);
+  if (h) {
+    try {
+      state.chatSub = state.marmot.network.subscription(group.relays || RELAYS, [
+        { kinds: [445], "#h": [h] },
+      ]);
+      state.chatSub.subscribe({
+        next: async (ev) => {
+          try {
+            for await (const _r of group.ingest([ev])) {
+              /* the history subscription below renders */
+            }
+          } catch (_) {}
+        },
+        error: () => {},
+        complete: () => {},
+      });
+    } catch (e) {
+      console.error("chat subscription", e);
+    }
+  }
+
+  renderHistory(group);
+}
+
+function renderHistory(group) {
+  state.chatMessages = [];
+  state.historyGen = null;
+  if (!group.history) {
+    renderChat();
+    return;
+  }
+  const gen = group.history.subscribe([{ kinds: [9] }]);
+  state.historyGen = gen;
+  (async () => {
+    try {
+      for await (const rumors of gen) {
+        if (state.activeChatGroup !== group) return;
+        state.chatMessages = rumors
+          .slice()
+          .sort((a, b) => a.created_at - b.created_at)
+          .map((r) => ({ from: r.pubkey, content: r.content, ts: r.created_at }));
+        renderChat();
+      }
+    } catch (_) {}
+  })();
+}
+
+async function sendChatMessage() {
+  if (!state.activeChatGroup) return;
+  const input = $("#chat-input");
+  const text = input.value.trim();
+  if (!text) return;
+  input.value = "";
+  try {
+    await state.activeChatGroup.sendChatMessage(text);
+  } catch (e) {
+    console.error("send chat", e);
+    toast("Failed to send message");
+  }
+}
+
+function renderChat() {
+  const box = $("#chat-messages");
+  if (!box) return;
+  box.innerHTML = "";
+  if (state.chatMessages.length === 0) {
+    const empty = document.createElement("div");
+    empty.className = "chat-empty muted small";
+    empty.textContent = state.activeChatGroup ? "No messages yet" : "Waiting for the chat to start…";
+    box.appendChild(empty);
+    return;
+  }
+  for (const m of state.chatMessages) {
+    const div = document.createElement("div");
+    div.className = "chat-message" + (m.from === state.identity.pubkey ? " me" : "");
+    const meta = document.createElement("div");
+    meta.className = "meta";
+    meta.textContent = formatNpubShort(m.from || "") + " " + new Date(m.ts * 1000).toLocaleTimeString();
+    const txt = document.createElement("div");
+    txt.className = "text";
+    txt.textContent = m.content;
+    div.appendChild(meta);
+    div.appendChild(txt);
+    box.appendChild(div);
+  }
+  box.scrollTop = box.scrollHeight;
+}

@@ -122,7 +122,10 @@
       <div class="detail-head">
         <button id="back-btn" class="btn btn-ghost" type="button">← Lists</button>
         <input id="list-title" class="title-input" aria-label="List name" />
-        <button id="share-btn" class="btn" type="button">Share</button>
+        <div class="head-actions">
+          <button id="chat-btn" class="btn btn-ghost" type="button" title="List chat">💬 Chat</button>
+          <button id="share-btn" class="btn" type="button">Share</button>
+        </div>
       </div>
       <div id="members-row" class="members"></div>
 
@@ -162,5 +165,20 @@
   <div id="toast" class="toast" hidden></div>
 
   <script type="module" src="app.js"></script>
+  <div id="chat-modal" class="modal" hidden>
+    <div class="modal-backdrop" data-close-chat></div>
+    <article class="modal-card chat-card" role="dialog" aria-modal="true" aria-labelledby="chat-title">
+      <header class="chat-header">
+        <h2 id="chat-title">List chat</h2>
+        <button class="modal-close" type="button" data-close-chat aria-label="Close">×</button>
+      </header>
+      <div class="chat-body" id="chat-messages"></div>
+      <form id="chat-form" class="chat-form" autocomplete="off">
+        <input id="chat-input" class="input" placeholder="Type a message…" maxlength="500" />
+        <button class="btn btn-primary" type="submit">Send</button>
+      </form>
+    </article>
+  </div>
 </body>
 </html>
+

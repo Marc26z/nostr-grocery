@@ -5,12 +5,13 @@
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/qr.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/qr.js",
+    "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/vendor-marmot.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/marmot.js && esbuild src/qr.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/qr.js",
     "serve": "perl serve.pl",
-    "test": "node --test --test-force-exit test/core.test.mjs test/app.smoke.mjs test/passkey.smoke.mjs"
+    "test": "node --test --test-force-exit test/core.test.mjs test/marmot.test.mjs test/app.smoke.mjs test/passkey.smoke.mjs"
   },
   "license": "MIT",
   "devDependencies": {
+    "@internet-privacy/marmot-ts": "^0.5.1",
     "esbuild": "^0.28.2",
     "jsdom": "^30.1.2",
     "nostr-tools": "^2.10.4",

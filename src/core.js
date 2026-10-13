@@ -227,6 +227,15 @@ export function createLocalIdentity(secretKeyBytes) {
       const ck = nip44.getConversationKey(sk, pubHex);
       return nip44.decrypt(ct, ck);
     },
+    // Plain NIP-44 (no glk tag), used by the Marmot signer for MLS gifts.
+    nip44: {
+      async encrypt(pubHex, plaintext) {
+        return nip44.encrypt(plaintext, nip44.getConversationKey(sk, pubHex));
+      },
+      async decrypt(pubHex, ciphertext) {
+        return nip44.decrypt(ciphertext, nip44.getConversationKey(sk, pubHex));
+      },
+    },
   };
 }
 
@@ -261,6 +270,7 @@ export function createNip07Identity() {
       if (!provider.nip44?.decrypt) throw new Error("Your signer cannot decrypt NIP-44");
       return provider.nip44.decrypt(pubHex, ct);
     },
+    nip44: provider.nip44 || undefined,
   };
 }
 
@@ -526,6 +536,10 @@ export function createNip46Identity({ signer, pubkey }) {
       const [tag, ct] = splitPayload(payload);
       if (tag === "glk04") return signer.nip04Decrypt(pubHex, ct);
       return signer.nip44Decrypt(pubHex, ct);
+    },
+    nip44: {
+      encrypt: (pubHex, plaintext) => signer.nip44Encrypt(pubHex, plaintext),
+      decrypt: (pubHex, ciphertext) => signer.nip44Decrypt(pubHex, ciphertext),
     },
   };
 }
