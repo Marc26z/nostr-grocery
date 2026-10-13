@@ -58,6 +58,11 @@
           <span class="signer-ico" aria-hidden="true">📱</span>
           <span>Sign in with a signer app (Amber…)</span>
         </button>
+        <button id="passkey-btn" class="btn btn-block signer-btn" type="button" hidden>
+          <span class="signer-ico" aria-hidden="true">🔐</span>
+          <span class="passkey-label">Create an identity with a passkey</span>
+        </button>
+        <p id="passkey-error" class="error" hidden></p>
         <button id="gen-btn" class="btn btn-primary btn-block" type="button">Create a new identity</button>
         <details class="import-details">
           <summary>I already have a Nostr key</summary>

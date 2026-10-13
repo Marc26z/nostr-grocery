@@ -264,6 +264,104 @@ export function createNip07Identity() {
   };
 }
 
+/* ------------------------------ passkeys --------------------------------- */
+
+/* A passkey can back a Nostr identity instead of an exported nsec. A WebAuthn
+ * credential's PRF extension yields a stable 32-byte secret for a fixed salt,
+ * so hashing it gives the same secp256k1 key every time. Because passkeys sync
+ * through the user's provider (Google Password Manager, iCloud Keychain, …),
+ * the same npub comes back on every device — there is no nsec to back up. */
+
+const PRF_SALT = new TextEncoder().encode("nostr-grocery-passkey-v1");
+
+/** Whether this browser can create/unlock a passkey-backed identity. */
+export function passkeysSupported() {
+  return (
+    typeof navigator !== "undefined" &&
+    !!navigator.credentials &&
+    typeof navigator.credentials.create === "function" &&
+    typeof navigator.credentials.get === "function" &&
+    typeof globalThis.PublicKeyCredential === "function"
+  );
+}
+
+function toB64url(bytes) {
+  let s = "";
+  for (const b of bytes) s += String.fromCharCode(b);
+  return btoa(s).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+}
+
+function fromB64url(str) {
+  const b = str.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b + "===".slice((b.length + 3) % 4));
+  const out = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+/** SHA-256(prf ‖ salt): maps any authenticator PRF output to one key. */
+async function secretFromPrf(prfBytes, salt) {
+  const joined = new Uint8Array(prfBytes.length + salt.length);
+  joined.set(prfBytes, 0);
+  joined.set(salt, prfBytes.length);
+  return new Uint8Array(await crypto.subtle.digest("SHA-256", joined));
+}
+
+function prfFirst(credential) {
+  const first = credential?.getClientExtensionResults?.()?.prf?.results?.first;
+  return first ? new Uint8Array(first) : null;
+}
+
+/** Ask an existing passkey for its PRF output (prompts the user). */
+export async function passkeySecret({ credentialId, salt = PRF_SALT } = {}) {
+  const assertion = await navigator.credentials.get({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      allowCredentials: credentialId ? [{ type: "public-key", id: fromB64url(credentialId) }] : [],
+      userVerification: "preferred",
+      extensions: { prf: { eval: { first: salt } } },
+    },
+  });
+  const first = prfFirst(assertion);
+  if (!first) {
+    throw new Error("This passkey can't derive your key (PRF extension unsupported by your browser or provider).");
+  }
+  return secretFromPrf(first, salt);
+}
+
+/**
+ * Create a passkey-backed identity. Returns the derived secret key plus the
+ * credential id — persist the latter to re-derive the same key later.
+ */
+export async function createPasskeySecret({ rpName = "Grocery", userName = "grocery", salt = PRF_SALT } = {}) {
+  const credential = await navigator.credentials.create({
+    publicKey: {
+      challenge: crypto.getRandomValues(new Uint8Array(32)),
+      rp: { name: rpName },
+      user: { id: crypto.getRandomValues(new Uint8Array(16)), name: userName, displayName: userName },
+      pubKeyCredParams: [
+        { type: "public-key", alg: -7 },
+        { type: "public-key", alg: -257 },
+      ],
+      authenticatorSelection: { residentKey: "required", userVerification: "preferred" },
+      extensions: { prf: { eval: { first: salt } } },
+    },
+  });
+  const credentialId = toB64url(new Uint8Array(credential.rawId));
+  const prf = prfFirst(credential);
+  // Most authenticators only return the PRF result on assertion, not creation.
+  const secretKey = prf ? await secretFromPrf(prf, salt) : await passkeySecret({ credentialId, salt });
+  return { credentialId, secretKey };
+}
+
+/** A local identity backed by a passkey (secret held in memory this session). */
+export function createPasskeyIdentity(secretKey, credentialId) {
+  const id = createLocalIdentity(secretKey);
+  id.type = "passkey";
+  id.credentialId = credentialId;
+  return id;
+}
+
 /* ------------------------- remote signers (NIP-46) ----------------------- */
 
 function withTimeout(promise, ms, message) {

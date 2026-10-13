@@ -39,8 +39,8 @@ member ◄─ decrypt K ── read/edit list ────────► relay
 ## Using it
 
 - **Create an identity** in the app (a new key is generated in your browser), or
-  import an existing `nsec`, or use a NIP-07 browser extension if you have one.
-  Your key never leaves the browser.
+  import an existing `nsec`, use a NIP-07 browser extension, or back it with a
+  **passkey** (see below). Your key never leaves the browser.
 - **New list** → add items, tick them off, **Clear checked**.
 - **Share** → paste someone's `npub`/`nprofile`. They receive the encrypted key
   and the list appears on their side. You can also copy an **invite link**
@@ -58,6 +58,24 @@ granting then happen on your device, so the browser never holds your key. The
 disposable client key used for the session is stored locally so a reload keeps
 you signed in.
 
+## Signing in with a passkey (WebAuthn)
+
+You can create an identity backed by a **passkey** instead of an exported `nsec`.
+The browser creates a WebAuthn credential and reads its [PRF extension] output —
+a stable 32-byte secret for a fixed salt — which is hashed (SHA-256) into your
+Nostr key. The same passkey always derives the same npub, so there is no secret
+to write down: it comes back on every device where the passkey is available
+(Google Password Manager, iCloud Keychain, a security key, …).
+
+- **Create an identity with a passkey** on the login screen. Nothing is stored
+  but the credential id; the derived key lives only for the session.
+- On a later visit, **Unlock with your passkey** re-derives the same key after
+  the usual passkey prompt.
+- Requires a browser and passkey provider that support the WebAuthn `prf`
+  extension. If it's missing, the app says so and you can use an `nsec` instead.
+
+[PRF extension]: https://w3c.github.io/webauthn/#prf-extension
+
 ## Files
 
 | file | purpose |
@@ -66,7 +84,7 @@ you signed in.
 | `src/core.js` | the protocol: crypto, event building/parsing, identities incl. NIP-46 (pure, unit-tested) |
 | `src/vendor.js` → `vendor/nostr.js` | `nostr-tools` (incl. `nip46`) bundled into one self-contained file |
 | `src/qr.js` → `vendor/qr.js` | QR rendering for the `nostrconnect://` login (bundled) |
-| `test/` | Node tests: crypto round-trips **and** a jsdom smoke test of the whole app incl. the signer flow |
+| `test/` | Node tests: crypto round-trips **and** jsdom smoke tests of the whole app incl. the signer and passkey flows |
 | `manifest.webmanifest`, `icons/` | PWA manifest + icons (used when wrapping for Zapstore) |
 | `scripts/build-apk.sh` | wrap the web app into an APK with `zapstore/goapk` |
 

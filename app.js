@@ -13,6 +13,10 @@ import {
   createLocalIdentity,
   createNip07Identity,
   createNip46Identity,
+  createPasskeyIdentity,
+  createPasskeySecret,
+  passkeySecret,
+  passkeysSupported,
   createBunkerSigner,
   connectBunkerLink,
   bunkerUserPubkey,
@@ -199,12 +203,80 @@ async function boot() {
         const id = createNip07Identity();
         await id.init();
         state.identity = id;
+        store.del("gl_passkey");
         store.set("gl_ext", true);
         startApp();
       } catch (e) {
         loginError(e.message || "Extension refused");
       }
     });
+  }
+
+  if (!state.identity && passkeysSupported()) setupPasskeyButton();
+}
+
+/* ------------------------------- passkeys -------------------------------- */
+
+function passkeyError(msg) {
+  const el = $("#passkey-error");
+  if (!el) return;
+  el.textContent = msg || "";
+  el.hidden = !msg;
+}
+
+function setupPasskeyButton() {
+  const btn = $("#passkey-btn");
+  if (!btn) return;
+  const saved = store.get("gl_passkey");
+  const hasKey = !!(saved && saved.id);
+  btn.hidden = false;
+  btn.querySelector(".passkey-label").textContent = hasKey
+    ? "Unlock with your passkey"
+    : "Create an identity with a passkey";
+  btn.addEventListener("click", () => (hasKey ? unlockWithPasskey() : createWithPasskey()));
+}
+
+function adoptIdentity(id) {
+  state.identity = id;
+  store.del("gl_sk");
+  store.del("gl_ext");
+  store.del("gl_nip46");
+  startApp();
+}
+
+async function createWithPasskey() {
+  const btn = $("#passkey-btn");
+  passkeyError("");
+  btn.disabled = true;
+  try {
+    const { credentialId, secretKey } = await createPasskeySecret({ userName: "grocery-" + randomHex(4) });
+    store.set("gl_passkey", { id: credentialId });
+    adoptIdentity(createPasskeyIdentity(secretKey, credentialId));
+    toast("Passkey identity created");
+  } catch (e) {
+    if (e?.name !== "NotAllowedError" && e?.name !== "AbortError") {
+      passkeyError(e.message || "Could not create a passkey");
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function unlockWithPasskey() {
+  const saved = store.get("gl_passkey");
+  if (!saved || !saved.id) return;
+  const btn = $("#passkey-btn");
+  passkeyError("");
+  btn.disabled = true;
+  try {
+    const secretKey = await passkeySecret({ credentialId: saved.id });
+    adoptIdentity(createPasskeyIdentity(secretKey, saved.id));
+  } catch (e) {
+    if (e?.name !== "NotAllowedError" && e?.name !== "AbortError") {
+      passkeyError(e.message || "Could not unlock with your passkey");
+    }
+  } finally {
+    btn.disabled = false;
   }
 }
 
@@ -288,6 +360,7 @@ function finishSignerLogin({ clientSecretKey, remotePubkey, relays, secret, user
   state.identity = createNip46Identity({ signer, pubkey: userPubkey });
   store.del("gl_sk");
   store.del("gl_ext");
+  store.del("gl_passkey");
   saveNip46({ clientSecretKey, remotePubkey, relays, secret, userPubkey });
   closeModal();
   toast("Signed in with your signer");
@@ -879,6 +952,7 @@ function bindUI() {
     const id = newLocalIdentity();
     state.identity = id;
     store.del("gl_nip46");
+    store.del("gl_passkey");
     store.set("gl_sk", bytesToHex(id.secretKey));
     const nsec = encodeSecret(id.secretKey);
     const npub = hexToNpub(id.pubkey);
@@ -902,6 +976,7 @@ function bindUI() {
       store.set("gl_sk", bytesToHex(id.secretKey));
       store.del("gl_ext");
       store.del("gl_nip46");
+      store.del("gl_passkey");
       startApp();
     } catch (e) {
       loginError(e.message);
@@ -1065,6 +1140,7 @@ function openSignerModal() {
 function openIdentityModal() {
   const npub = hexToNpub(state.identity.pubkey);
   const viaSigner = state.identity.type === "nip46";
+  const viaPasskey = state.identity.type === "passkey";
   openModal(
     `
     <h2>Your identity</h2>
@@ -1078,8 +1154,17 @@ function openIdentityModal() {
         ? `<p class="signer-badge">📱 Signing via a remote signer (NIP-46). Your key stays on your device.</p>`
         : ""
     }
+    ${
+      viaPasskey
+        ? `<p class="signer-badge">🔐 Signing with a passkey. Your key is derived from your passkey and never stored.</p>`
+        : ""
+    }
     <h3>Danger zone</h3>
-    <p class="muted small">Signing out forgets this key in this browser. Make sure you saved it.</p>
+    <p class="muted small">${
+      viaPasskey
+        ? "Signing out forgets this passkey in this browser. You can sign in again with the same passkey."
+        : "Signing out forgets this key in this browser. Make sure you saved it."
+    }</p>
     <button id="id-signout" class="btn btn-danger btn-block" type="button">Sign out</button>`,
     () => {
       $("#id-copy").addEventListener("click", () => copy(npub, "npub copied"));
@@ -1092,6 +1177,7 @@ function openIdentityModal() {
         store.del("gl_sk");
         store.del("gl_ext");
         store.del("gl_nip46");
+        store.del("gl_passkey");
         location.reload();
       });
     }

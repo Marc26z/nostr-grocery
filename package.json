@@ -1,13 +1,13 @@
 {
   "name": "nostr-grocery",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "A shared, end-to-end encrypted grocery list over Nostr.",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/qr.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/qr.js",
     "serve": "perl serve.pl",
-    "test": "node --test --test-force-exit test/core.test.mjs test/app.smoke.mjs"
+    "test": "node --test --test-force-exit test/core.test.mjs test/app.smoke.mjs test/passkey.smoke.mjs"
   },
   "license": "MIT",
   "devDependencies": {
