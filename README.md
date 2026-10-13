@@ -48,14 +48,25 @@ member ◄─ decrypt K ── read/edit list ────────► relay
 - The self-grant means signing in with the same `nsec` on another device
   restores your lists.
 
+## Signing in with a mobile signer (NIP-46)
+
+Your key doesn't have to live in the browser. **Sign in with a signer app**
+shows a QR code for a `nostrconnect://` token — scan it with
+[Amber](https://github.com/greenart7c3/Amber) (or any NIP-46 signer) and approve.
+You can also paste a `bunker://…` connection string instead. Signing and key
+granting then happen on your device, so the browser never holds your key. The
+disposable client key used for the session is stored locally so a reload keeps
+you signed in.
+
 ## Files
 
 | file | purpose |
 |---|---|
 | `index.html`, `styles.css`, `app.js` | the app (no build step needed at runtime) |
-| `src/core.js` | the protocol: crypto, event building/parsing, identities (pure, unit-tested) |
-| `src/vendor.js` → `vendor/nostr.js` | `nostr-tools` bundled into one self-contained file |
-| `test/` | Node tests: crypto round-trips **and** a jsdom smoke test of the whole app |
+| `src/core.js` | the protocol: crypto, event building/parsing, identities incl. NIP-46 (pure, unit-tested) |
+| `src/vendor.js` → `vendor/nostr.js` | `nostr-tools` (incl. `nip46`) bundled into one self-contained file |
+| `src/qr.js` → `vendor/qr.js` | QR rendering for the `nostrconnect://` login (bundled) |
+| `test/` | Node tests: crypto round-trips **and** a jsdom smoke test of the whole app incl. the signer flow |
 | `manifest.webmanifest`, `icons/` | PWA manifest + icons (used when wrapping for Zapstore) |
 | `scripts/build-apk.sh` | wrap the web app into an APK with `zapstore/goapk` |
 
@@ -64,13 +75,14 @@ member ◄─ decrypt K ── read/edit list ────────► relay
 Requires Node (for the bundler/tests) and Perl (for the dev server).
 
 ```sh
-npm install          # nostr-tools + esbuild + jsdom
-npm run build        # rebuild vendor/nostr.js after changing src/vendor.js
-npm test             # crypto tests + headless app smoke test
+npm install          # nostr-tools + esbuild + jsdom (+ qrcode-generator)
+npm run build        # rebuild vendor/nostr.js and vendor/qr.js after changing src/
+npm test             # crypto tests + headless app smoke test (both sign-in paths)
 npm run serve        # http://localhost:8000
 ```
 
-`vendor/nostr.js` is committed, so the deployed site needs no build step.
+`vendor/nostr.js` and `vendor/qr.js` are committed, so the deployed site needs
+no build step.
 
 ## Deploying the web app
 

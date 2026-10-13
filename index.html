@@ -54,6 +54,10 @@
           Only the people you invite can read or change it — no server, no account.
         </p>
         <div id="ext-slot"></div>
+        <button id="signer-btn" class="btn btn-block signer-btn" type="button">
+          <span class="signer-ico" aria-hidden="true">📱</span>
+          <span>Sign in with a signer app (Amber…)</span>
+        </button>
         <button id="gen-btn" class="btn btn-primary btn-block" type="button">Create a new identity</button>
         <details class="import-details">
           <summary>I already have a Nostr key</summary>
@@ -64,7 +68,8 @@
           <p id="login-error" class="error" hidden></p>
         </details>
         <p class="muted small">
-          Your secret key is stored only in this browser and never sent anywhere.
+          Your secret key stays on your device. Signing in with a signer app keeps it
+          there — this app never sees it.
         </p>
       </div>
 

@@ -10,3 +10,4 @@ export { SimplePool } from "nostr-tools/pool";
 export * as nip19 from "nostr-tools/nip19";
 export * as nip44 from "nostr-tools/nip44";
 export * as nip04 from "nostr-tools/nip04";
+export { BunkerSigner, parseBunkerInput } from "nostr-tools/nip46";

@@ -12,10 +12,17 @@ import {
   newLocalIdentity,
   createLocalIdentity,
   createNip07Identity,
+  createNip46Identity,
+  createBunkerSigner,
+  connectBunkerLink,
+  bunkerUserPubkey,
+  makeNostrConnect,
+  awaitNostrConnect,
   encodeSecret,
   decodeSecret,
   npubToHex,
   hexToNpub,
+  hexToBytes,
   shortNpub,
   emptyList,
   newItem,
@@ -30,6 +37,7 @@ import {
   listDTag,
 } from "./src/core.js";
 import { SimplePool } from "./vendor/nostr.js";
+import { qrSvg } from "./vendor/qr.js";
 
 /* ------------------------------- config --------------------------------- */
 
@@ -41,6 +49,10 @@ const RELAYS = [
   "wss://nostr.mom",
   "wss://relay.snort.social",
 ];
+
+// Relays used for NIP-46 signer chatter (kind 24133). They must forward
+// ephemeral events addressed to us with a `p` tag.
+const SIGNER_RELAYS = ["wss://nos.lol", "wss://relay.damus.io", "wss://relay.primal.net", "wss://nostr.mom"];
 
 /* -------------------------------- dom ----------------------------------- */
 
@@ -160,6 +172,7 @@ function scheduleRender() {
 async function boot() {
   initTheme();
   bindUI();
+  state.pool = new SimplePool();
 
   const sk = store.get("gl_sk");
   if (sk) {
@@ -168,6 +181,8 @@ async function boot() {
     } catch (_) {
       store.del("gl_sk");
     }
+  } else if (store.get("gl_nip46")) {
+    state.identity = restoreNip46();
   } else if (store.get("gl_ext") === true && window.nostr) {
     state.identity = createNip07Identity();
     await state.identity.init();
@@ -231,6 +246,68 @@ function newList(id, opts = {}) {
     name: opts.name || "",
     locked: false,
   };
+}
+
+/* --------------------------- signer identity ----------------------------- */
+
+let signerAbort = null;
+
+function clientMetadata() {
+  return { name: "Grocery", url: location.origin + location.pathname };
+}
+
+function saveNip46({ clientSecretKey, remotePubkey, relays, secret, userPubkey }) {
+  store.set("gl_nip46", {
+    sk: bytesToHex(clientSecretKey),
+    remote: remotePubkey,
+    relays,
+    secret: secret || null,
+    user: userPubkey,
+  });
+}
+
+function restoreNip46() {
+  const c = store.get("gl_nip46");
+  if (!c || !c.sk || !c.remote || !c.user || !Array.isArray(c.relays)) return null;
+  try {
+    const signer = createBunkerSigner({
+      clientSecretKey: hexToBytes(c.sk),
+      remotePubkey: c.remote,
+      relays: c.relays,
+      secret: c.secret,
+      pool: state.pool,
+    });
+    return createNip46Identity({ signer, pubkey: c.user });
+  } catch (_) {
+    store.del("gl_nip46");
+    return null;
+  }
+}
+
+function finishSignerLogin({ clientSecretKey, remotePubkey, relays, secret, userPubkey, signer }) {
+  state.identity = createNip46Identity({ signer, pubkey: userPubkey });
+  store.del("gl_sk");
+  store.del("gl_ext");
+  saveNip46({ clientSecretKey, remotePubkey, relays, secret, userPubkey });
+  closeModal();
+  toast("Signed in with your signer");
+  startApp();
+}
+
+async function connectWithBunker(input) {
+  const { signer, pubkey, bp, clientSecretKey } = await connectBunkerLink({
+    input,
+    pool: state.pool,
+    metadata: clientMetadata(),
+  });
+  finishSignerLogin({
+    clientSecretKey,
+    remotePubkey: bp.pubkey,
+    relays: bp.relays,
+    secret: bp.secret,
+    userPubkey: pubkey,
+    signer,
+  });
 }
 
 /* ------------------------------ relay layer ------------------------------ */
@@ -608,6 +685,10 @@ function openModal(html, onMount) {
 }
 
 function closeModal() {
+  if (signerAbort) {
+    signerAbort.abort();
+    signerAbort = null;
+  }
   modalEl.hidden = true;
   modalBody.innerHTML = "";
   document.body.style.overflow = "";
@@ -793,9 +874,11 @@ function bindUI() {
   });
 
   // login
+  $("#signer-btn").addEventListener("click", openSignerModal);
   $("#gen-btn").addEventListener("click", () => {
     const id = newLocalIdentity();
     state.identity = id;
+    store.del("gl_nip46");
     store.set("gl_sk", bytesToHex(id.secretKey));
     const nsec = encodeSecret(id.secretKey);
     const npub = hexToNpub(id.pubkey);
@@ -818,6 +901,7 @@ function bindUI() {
       state.identity = id;
       store.set("gl_sk", bytesToHex(id.secretKey));
       store.del("gl_ext");
+      store.del("gl_nip46");
       startApp();
     } catch (e) {
       loginError(e.message);
@@ -892,8 +976,95 @@ async function promptNewList() {
   if (name) await createList(name);
 }
 
+function openSignerModal() {
+  if (signerAbort) signerAbort.abort();
+  const ac = new AbortController();
+  signerAbort = ac;
+
+  const { clientSecretKey, clientPubkey, secret, uri } = makeNostrConnect(SIGNER_RELAYS, clientMetadata());
+  const qr = qrSvg(uri, { cellSize: 5, margin: 1 });
+
+  openModal(
+    `
+    <h2>Sign in with a signer</h2>
+    <p class="muted small">
+      Keep your key on your phone. Scan this with <b>Amber</b> (or any NIP-46 signer),
+      then approve the connection.
+    </p>
+    <div class="qr-wrap">${qr}</div>
+    <a class="btn btn-primary btn-block" href="${uri}">Open in signer app</a>
+    <p id="signer-status" class="muted small center signer-note">Waiting for approval…</p>
+    <details class="import-details">
+      <summary>Or paste a bunker:// link instead</summary>
+      <form id="bunker-form" class="import-row">
+        <input id="bunker-input" class="input" placeholder="bunker://…" autocomplete="off" spellcheck="false" />
+        <button class="btn btn-primary" type="submit">Connect</button>
+      </form>
+    </details>
+    <p id="signer-error" class="error" hidden></p>`,
+    () => {
+      $("#bunker-form").addEventListener("submit", async (e) => {
+        e.preventDefault();
+        ac.abort();
+        const err = $("#signer-error");
+        const status = $("#signer-status");
+        const btn = e.submitter || e.target.querySelector("button");
+        btn.disabled = true;
+        err.hidden = true;
+        if (status) status.textContent = "Connecting…";
+        try {
+          await connectWithBunker($("#bunker-input").value);
+        } catch (ex) {
+          err.textContent = ex.message || "Could not connect";
+          err.hidden = false;
+          if (status) status.textContent = "Waiting for approval…";
+          btn.disabled = false;
+        }
+      });
+    }
+  );
+
+  awaitNostrConnect({
+    pool: state.pool,
+    clientSecretKey,
+    clientPubkey,
+    relays: SIGNER_RELAYS,
+    secret,
+    signal: ac.signal,
+  })
+    .then(async (remotePubkey) => {
+      const status = $("#signer-status");
+      if (status) status.textContent = "Approved — finishing…";
+      const signer = createBunkerSigner({
+        clientSecretKey,
+        remotePubkey,
+        relays: SIGNER_RELAYS,
+        secret,
+        pool: state.pool,
+      });
+      const userPubkey = await bunkerUserPubkey(signer);
+      finishSignerLogin({
+        clientSecretKey,
+        remotePubkey,
+        relays: SIGNER_RELAYS,
+        secret,
+        userPubkey,
+        signer,
+      });
+    })
+    .catch((ex) => {
+      if (ac.signal.aborted) return;
+      const err = $("#signer-error");
+      if (err) {
+        err.textContent = ex.message || "Could not connect";
+        err.hidden = false;
+      }
+    });
+}
+
 function openIdentityModal() {
   const npub = hexToNpub(state.identity.pubkey);
+  const viaSigner = state.identity.type === "nip46";
   openModal(
     `
     <h2>Your identity</h2>
@@ -902,6 +1073,11 @@ function openIdentityModal() {
       <code class="copy-code">${npub}</code>
       <button id="id-copy" class="btn" type="button">Copy</button>
     </div>
+    ${
+      viaSigner
+        ? `<p class="signer-badge">📱 Signing via a remote signer (NIP-46). Your key stays on your device.</p>`
+        : ""
+    }
     <h3>Danger zone</h3>
     <p class="muted small">Signing out forgets this key in this browser. Make sure you saved it.</p>
     <button id="id-signout" class="btn btn-danger btn-block" type="button">Sign out</button>`,
@@ -910,8 +1086,12 @@ function openIdentityModal() {
       $("#id-signout").addEventListener("click", async () => {
         if (!(await confirmAction("Sign out?", "Your lists stay on relays; you just forget the key here.", "Sign out")))
           return;
+        try {
+          await state.identity.signer?.close();
+        } catch (_) {}
         store.del("gl_sk");
         store.del("gl_ext");
+        store.del("gl_nip46");
         location.reload();
       });
     }
