@@ -29,9 +29,10 @@ cp index.html styles.css app.js manifest.webmanifest "$WEB"/
 cp -r src vendor icons "$WEB"/
 
 # Reuse one keystore for every release so the app updates in place.
+# (KEYSTORE_PASSWORD is honored by both keygen and build if set.)
 if [ ! -f "$KEYSTORE" ]; then
   echo "Generating signing keystore at $KEYSTORE — keep it safe and reuse it for every release."
-  goapk gen "$KEYSTORE"
+  goapk keygen "$KEYSTORE"
 fi
 
 goapk build -s "$WEB" \
