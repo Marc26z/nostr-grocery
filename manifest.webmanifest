@@ -1,0 +1,17 @@
+{
+  "name": "Grocery — shared list on Nostr",
+  "short_name": "Grocery",
+  "description": "A shared, end-to-end encrypted grocery list over Nostr.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#12160f",
+  "theme_color": "#12160f",
+  "categories": ["shopping", "productivity", "utilities"],
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
