@@ -121,7 +121,15 @@ function saveMeta() {
   const out = {};
   for (const l of state.lists.values()) {
     if (!l.key) continue;
-    out[l.id] = { key: l.key, name: l.data?.name || l.name || "", owner: l.owner || null };
+    out[l.id] = {
+      key: l.key,
+      name: l.data?.name || l.name || "",
+      owner: l.owner || null,
+      createdAt: l.createdAt || 0,
+      author: l.author || null,
+      members: [...l.members],
+      data: l.data || null,
+    };
   }
   store.set("gl_lists", out);
 }
@@ -305,7 +313,16 @@ function startApp() {
   const meta = loadMeta();
   for (const [id, m] of Object.entries(meta)) {
     if (!m || !m.key) continue;
-    state.lists.set(id, newList(id, { key: m.key, name: m.name, owner: m.owner }));
+    const l = newList(id, { key: m.key, name: m.name, owner: m.owner });
+    if (m.data && typeof m.data === "object" && Array.isArray(m.data.items)) {
+      l.data = m.data;
+      l.data.name = typeof l.data.name === "string" ? l.data.name : m.name || "Grocery list";
+      l.name = l.data.name;
+      l.createdAt = Number(m.createdAt) || 0;
+      l.author = m.author || null;
+      if (Array.isArray(m.members)) for (const x of m.members) l.members.add(x);
+    }
+    state.lists.set(id, l);
   }
 
   importInviteFromHash();
