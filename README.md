@@ -43,8 +43,11 @@ member ◄─ decrypt K ── read/edit list ────────► relay
   **passkey** (see below). Your key never leaves the browser.
 - **New list** → add items, tick them off, **Clear checked**.
 - **Share** → paste someone's `npub`/`nprofile`. They receive the encrypted key
-  and the list appears on their side. You can also copy an **invite link**
-  (anyone holding it can read and edit, so only share it with people you trust).
+  and the list appears on their side.
+- **List key** → the Share dialog also shows a paste-able **list key**
+  (a `grocery1:…` string packing the owner, list id and the list's 256-bit
+  key). Anyone who has it can read and edit the list, so only share it with
+  people you trust. On another device, **Join** and paste the key to open the list.
 - The self-grant means signing in with the same `nsec` on another device
   restores your lists.
 

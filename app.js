@@ -723,29 +723,74 @@ async function shareWith(input) {
   if (group) inviteMissingMembers(l.id, group, [recipient]); // pull them into the chat if it exists
 }
 
-function inviteLink(l) {
-  const payload = { o: state.identity.pubkey, l: l.id, k: l.key, n: l.data.name };
-  const b64 = b64urlEncode(JSON.stringify(payload));
-  return `${location.origin}${location.pathname}#invite=${b64}`;
+const LIST_KEY_TAG = "grocery1:";
+
+function isHexKey(v, len) {
+  return typeof v === "string" && new RegExp(`^[0-9a-f]{${len}}$`, "i").test(v);
+}
+
+/**
+ * A paste-able "list key": the real 256-bit key that decrypts the list, packed
+ * with the owner pubkey, list id and name so someone can join by pasting it.
+ * `grocery1:` marks the format. This key is the cryptographic secret — treat it
+ * like a password: anyone who has it can read and edit the list.
+ */
+function listKeyCode(l) {
+  const payload = {
+    v: 1,
+    o: l.owner || state.identity.pubkey,
+    l: l.id,
+    k: l.key,
+    n: l.data?.name || l.name || "",
+  };
+  return LIST_KEY_TAG + b64urlEncode(JSON.stringify(payload));
+}
+
+/** Parse a pasted list key (or an old `#invite=` URL) into `{o,l,k,n}`. */
+function parseListKeyCode(input) {
+  if (typeof input !== "string") return null;
+  let s = input.trim().replace(/\s+/g, "");
+  if (!s) return null;
+  const m = s.match(/#invite=(.+)$/); // accept a whole invite URL too
+  if (m) s = m[1];
+  if (s.startsWith(LIST_KEY_TAG)) s = s.slice(LIST_KEY_TAG.length);
+  let inv;
+  try {
+    inv = JSON.parse(b64urlDecode(s));
+  } catch (_) {
+    return null;
+  }
+  if (!inv || typeof inv !== "object") return null;
+  if (!isHexKey(inv.k, 64) || !isHexKey(inv.l, 32)) return null; // 256-bit key, 128-bit id
+  return inv;
+}
+
+/** Add (or refresh) a shared list from a list key and start syncing it. */
+function joinWithKey(input) {
+  const inv = parseListKeyCode(input);
+  if (!inv) throw new Error("That doesn't look like a list key.");
+  const l = state.lists.get(inv.l) || newList(inv.l, { key: inv.k, name: inv.n, owner: inv.o });
+  l.key = inv.k.toLowerCase();
+  if (inv.n) l.name = inv.n;
+  if (isHexKey(inv.o, 64)) l.owner = inv.o;
+  state.lists.set(inv.l, l);
+  saveMeta();
+  if (l.owner) {
+    const filt = { kinds: [LIST_KIND], authors: [l.owner], "#d": [listDTag(inv.l)] };
+    const sig = JSON.stringify(filt);
+    if (!state.extraFilters.some((f) => JSON.stringify(f) === sig)) state.extraFilters.push(filt);
+  }
+  if (state.pool) connect(); // re-subscribe so the shared list is fetched right now
+  scheduleRender();
+  return l;
 }
 
 function importInviteFromHash() {
   const m = location.hash.match(/^#invite=(.+)$/);
   if (!m) return;
   try {
-    const inv = JSON.parse(b64urlDecode(m[1]));
-    if (inv && inv.l && inv.k) {
-      const l = state.lists.get(inv.l) || newList(inv.l, { key: inv.k, name: inv.n, owner: inv.o });
-      l.key = inv.k;
-      l.name = inv.n || l.name;
-      l.owner = inv.o || l.owner;
-      state.lists.set(inv.l, l);
-      saveMeta();
-      if (inv.o) {
-        state.extraFilters.push({ kinds: [LIST_KIND], authors: [inv.o], "#d": [listDTag(inv.l)] });
-      }
-      toast("Invite imported");
-    }
+    joinWithKey(m[1]);
+    toast("List added");
   } catch (_) {
     /* ignore malformed invite */
   }
@@ -865,9 +910,14 @@ function openShareModal() {
     <h3>Members</h3>
     <ul class="members-list">${renderMembers()}</ul>
     <div class="invite">
-      <button id="copy-invite" class="btn btn-block" type="button">Copy invite link</button>
+      <label class="field-label">List key</label>
+      <div class="copy-row">
+        <code id="list-key" class="copy-code key-code"></code>
+        <button id="copy-key" class="btn" type="button">Copy</button>
+      </div>
       <p class="muted small" style="margin-top:8px">
-        Anyone with the link can read and edit this list, so share it only with people you trust.
+        On their device, open Grocery → <strong>Join</strong> and paste this key. Anyone who
+        has it can read and edit this list, so share it only with people you trust.
       </p>
     </div>`,
     () => {
@@ -890,7 +940,41 @@ function openShareModal() {
           btn.disabled = false;
         }
       });
-      $("#copy-invite").addEventListener("click", () => copy(inviteLink(l), "Invite link copied"));
+      $("#list-key").textContent = listKeyCode(l);
+      $("#copy-key").addEventListener("click", () => copy(listKeyCode(l), "List key copied"));
+    }
+  );
+}
+
+function openJoinModal() {
+  openModal(
+    `
+    <h2>Join a list</h2>
+    <p class="muted small">
+      Paste the list key someone shared with you. It starts with “${LIST_KEY_TAG}”.
+    </p>
+    <form id="join-form">
+      <input id="join-input" class="input" placeholder="${LIST_KEY_TAG}…" autocomplete="off" spellcheck="false" />
+      <p id="join-error" class="error" hidden></p>
+      <div class="share-row"><button class="btn btn-primary btn-block" type="submit">Join list</button></div>
+    </form>`,
+    () => {
+      const input = $("#join-input");
+      input.focus();
+      $("#join-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const err = $("#join-error");
+        err.hidden = true;
+        try {
+          const l = joinWithKey(input.value);
+          closeModal();
+          toast("List added");
+          if (l.data) openList(l.id);
+        } catch (ex) {
+          err.textContent = ex.message || "Could not join";
+          err.hidden = false;
+        }
+      });
     }
   );
 }
@@ -964,6 +1048,9 @@ function bindUI() {
   document.addEventListener("keydown", (e) => {
     if (e.key === "Escape") { closeModal(); closeChatModal(); }
   });
+  window.addEventListener("hashchange", () => {
+    if (location.hash.startsWith("#invite=") && state.identity) importInviteFromHash();
+  });
 
   // login
   $("#signer-btn").addEventListener("click", openSignerModal);
@@ -1005,6 +1092,8 @@ function bindUI() {
   // lists
   $("#new-list-btn").addEventListener("click", promptNewList);
   $("#empty-new-btn").addEventListener("click", promptNewList);
+  $("#join-list-btn").addEventListener("click", openJoinModal);
+  $("#empty-join-btn").addEventListener("click", openJoinModal);
 
   // detail
   $("#back-btn").addEventListener("click", () => {

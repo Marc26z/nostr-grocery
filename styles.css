@@ -200,6 +200,14 @@ main { flex: 1 0 auto; padding: 22px 0 40px; }
   overflow-x: auto;
   white-space: nowrap;
 }
+.key-code {
+  white-space: normal;
+  word-break: break-all;
+  font-size: 0.78rem;
+  line-height: 1.4;
+  max-height: 7.5em;
+  overflow-y: auto;
+}
 
 .input {
   font: inherit;
@@ -252,6 +260,8 @@ main { flex: 1 0 auto; padding: 22px 0 40px; }
 .empty { text-align: center; padding: 48px 16px; }
 .empty-icon { font-size: 2.6rem; margin: 0; }
 .empty h2 { margin: 8px 0; font-size: 1.2rem; }
+.empty-actions { display: flex; gap: 10px; justify-content: center; flex-wrap: wrap; margin-top: 14px; }
+.head-btns { display: flex; gap: 10px; flex-wrap: wrap; }
 
 /* ------------------------------ detail --------------------------------- */
 .detail-head { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }

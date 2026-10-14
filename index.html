@@ -105,14 +105,20 @@
           <h1>My lists</h1>
           <p id="lists-sub" class="muted small"></p>
         </div>
-        <button id="new-list-btn" class="btn btn-primary" type="button">+ New list</button>
+        <div class="head-btns">
+          <button id="join-list-btn" class="btn" type="button">Join</button>
+          <button id="new-list-btn" class="btn btn-primary" type="button">+ New list</button>
+        </div>
       </div>
       <div id="lists-grid" class="grid"></div>
       <div id="lists-empty" class="empty" hidden>
         <p class="empty-icon">🧺</p>
         <h2>No lists yet</h2>
         <p class="muted">Create a list, then share it with other npubs. It syncs over relays.</p>
-        <button id="empty-new-btn" class="btn btn-primary" type="button">Create your first list</button>
+        <div class="empty-actions">
+          <button id="empty-new-btn" class="btn btn-primary" type="button">Create your first list</button>
+          <button id="empty-join-btn" class="btn" type="button">Join with a list key</button>
+        </div>
       </div>
       <p id="waiting-hint" class="muted small" hidden></p>
     </section>
