@@ -44,6 +44,7 @@ import { SimplePool } from "./vendor/nostr.js";
 import { qrSvg } from "./vendor/qr.js";
 import { createMarmotAdapter } from "./src/marmot.js";
 import { wrapIdentityAsSigner } from "./src/marmot-identity.js";
+import { createPublishQueue } from "./src/publish-queue.js";
 
 
 /* ------------------------------- config --------------------------------- */
@@ -76,6 +77,7 @@ const toastEl = $("#toast");
 const state = {
   identity: null,
   pool: null,
+  queue: null,
   sub: null,
   lists: new Map(), // listId -> list
   grants: new Map(), // listId -> parsed key grant (latest)
@@ -194,6 +196,7 @@ async function boot() {
   initTheme();
   bindUI();
   state.pool = new SimplePool();
+  state.queue = createPublishQueue({ pool: state.pool, relays: RELAYS, store });
 
   const sk = store.get("gl_sk");
   if (sk) {
@@ -328,6 +331,7 @@ function startApp() {
   importInviteFromHash();
   connect();
   startConnPoll();
+  state.queue?.flush(); // retry anything queued from a previous session
   initMarmot();
 
   scheduleRender();
@@ -442,8 +446,10 @@ function startConnPoll() {
     if (!state.pool) return;
     const status = state.pool.listConnectionStatus();
     const open = [...status.values()].filter(Boolean).length;
-    if (open > 0) setConn("online", `Live · ${open}`);
-    else setConn("offline", "Offline");
+    if (open > 0) {
+      setConn("online", `Live · ${open}`);
+      if (state.queue?.size()) state.queue.flush(); // push anything that failed while offline
+    } else setConn("offline", "Offline");
   }, 4000);
 }
 
@@ -455,10 +461,11 @@ function setConn(s, text) {
 
 async function publishEvent(ev) {
   if (!state.pool) return 0;
-  const results = await Promise.allSettled(state.pool.publish(RELAYS, ev));
-  const ok = results.filter((r) => r.status === "fulfilled").length;
+  const { ok, queued } = state.queue
+    ? await state.queue.publish(ev)
+    : { ok: (await Promise.allSettled(state.pool.publish(RELAYS, ev))).filter((r) => r.status === "fulfilled").length, queued: false };
   if (ok === 0) {
-    toast("No relay accepted the update");
+    toast(queued ? "Offline — saved locally, will retry" : "No relay accepted the update");
     setConn("error", "No relays");
   } else {
     setConn("online", "Live");
