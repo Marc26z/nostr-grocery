@@ -1,6 +1,8 @@
 # 🧺 Grocery
 
-A **shared, end-to-end encrypted shopping list** that lives on Nostr and runs
+*I vibe-coded a simple grocery list app that I can share with my household. I used open-code on an Omarchy Android app that basically turns your phone into an arch linux computer.  It's the free version. I had to ask Deepseek Pro to fix some bugs, but it was able to fix the bugs based on that information. It was also able to bpush it to github and host it on a github domain. Then I heard Max Hillebrand suggest we should try adding Marmot Protocol messages. Like a famous genie once said, "your wish is my command." Now I can talk about my grocery list in private because... Why not? I can ask my wife to pick up some raw milk our milk dealer. Just kidding. Buying raw milk may or may not be a crime in your area. Check with the local milk police. Please follow all milk laws.*
+
+A **shared, end-to-end encrypted shopping list** that lives on Nostr and run
 entirely in the browser. Create a list, invite other npubs, and everyone sees
 live updates — without any server, account, or database. Relays only ever store
 ciphertext.
@@ -154,3 +156,4 @@ which needs no Android SDK, JDK or Gradle.
 ## License
 
 MIT
+
