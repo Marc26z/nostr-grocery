@@ -1,7 +1,7 @@
 {
   "name": "nostr-grocery",
-  "version": "1.0.4",
-  "description": "A shared, end-to-end encrypted grocery list over Nostr.",
+  "version": "1.0.5",
+  "description": "A shared, end-to-end encrypted grocery list and household pantry over Nostr.",
   "type": "module",
   "private": true,
   "scripts": {

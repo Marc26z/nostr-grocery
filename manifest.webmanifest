@@ -1,7 +1,7 @@
 {
   "name": "Grocery — shared list on Nostr",
   "short_name": "Grocery",
-  "description": "A shared, end-to-end encrypted grocery list over Nostr.",
+  "description": "A shared, end-to-end encrypted grocery list and household pantry over Nostr.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
