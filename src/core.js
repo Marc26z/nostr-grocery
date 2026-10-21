@@ -38,6 +38,7 @@ export const NIP46_PERMS = [
   "nip04_decrypt",
 ].join(",");
 export const LIST_DATA = "grocery-list"; // `t` tag marking a list event
+export const HOUSEHOLD_DATA = "grocery-household"; // `t` tag marking a household event
 export const KEYGRANT_DATA = "grocery-key"; // `t` tag marking a key grant
 const D_LIST = "grocery:";
 const D_KEY = "grocery-key:";
@@ -126,6 +127,98 @@ export function newItem(text) {
   };
 }
 
+/* ------------------------- household (stock) docs ------------------------- */
+
+/**
+ * A household document: the product catalog plus the pantry stock. Shares the
+ * same key-grant/membership machinery as a list — it's still just an AES blob
+ * in a kind 30078 event — but its plaintext carries `products` and `stock`
+ * instead of `items`, and it's tagged `grocery-household` so list-only clients
+ * ignore it instead of rendering an empty list.
+ */
+export function emptyHousehold(name = "Household") {
+  return {
+    v: 1,
+    type: "household",
+    name,
+    products: [],
+    stock: [],
+    updatedAt: Math.floor(Date.now() / 1000),
+  };
+}
+
+export function newProduct({ name, category = "", unit = "pcs", minQty = 0 } = {}) {
+  const at = Math.floor(Date.now() / 1000);
+  return {
+    id: randomHex(8),
+    name: String(name).trim(),
+    category: String(category).trim(),
+    unit: String(unit).trim() || "pcs",
+    minQty: Math.max(0, Number(minQty) || 0),
+    createdAt: at,
+    updatedAt: at,
+  };
+}
+
+/** One purchase of a product: a quantity, optionally with a best-before date. */
+export function newStockEntry(productId, qty, bestBefore = null, addedBy = null) {
+  return {
+    id: randomHex(8),
+    productId,
+    qty: Math.max(0, Number(qty) || 0),
+    bestBefore: bestBefore || null,
+    addedAt: Math.floor(Date.now() / 1000),
+    addedBy,
+  };
+}
+
+/** Total quantity of a product currently in stock (sum of its entries). */
+export function productQty(household, productId) {
+  let total = 0;
+  for (const e of household.stock || []) {
+    if (e.productId === productId) total += Number(e.qty) || 0;
+  }
+  return total;
+}
+
+/** True when the product is below its own minimum stock level. */
+export function isLowStock(product, household) {
+  if (!product || !(product.minQty > 0)) return false;
+  return productQty(household, product.id) < product.minQty;
+}
+
+/** Sort key: earliest best-before first (entries without one go last), then oldest. */
+function fefoCompare(a, b) {
+  const da = a.bestBefore || "9999-12-31";
+  const db = b.bestBefore || "9999-12-31";
+  if (da !== db) return da < db ? -1 : 1;
+  return (a.addedAt || 0) - (b.addedAt || 0);
+}
+
+/**
+ * Take up to `qty` out of stock for a product, first-empty-first-out: entries
+ * closest to their best-before date are consumed before older ones without a
+ * date. Returns the quantity actually consumed (never more than what's there)
+ * and drops the entries that were used up.
+ */
+export function consumeStock(household, productId, qty) {
+  let want = Number(qty) || 0;
+  if (want <= 0) return 0;
+  const entries = (household.stock || [])
+    .filter((e) => e.productId === productId && (Number(e.qty) || 0) > 0)
+    .sort(fefoCompare);
+  let consumed = 0;
+  for (const e of entries) {
+    if (consumed >= want) break;
+    const avail = Number(e.qty) || 0;
+    const take = Math.min(avail, want - consumed);
+    e.qty = avail - take;
+    consumed += take;
+  }
+  household.stock = (household.stock || []).filter((e) => (Number(e.qty) || 0) > 0);
+  return consumed;
+}
+
 /* ---------------------------- key grants -------------------------------- */
 
 function splitPayload(payload) {
@@ -176,13 +269,16 @@ export async function openKeyGrant(identity, grant) {
 
 /* ---------------------------- list events ------------------------------- */
 
-export async function makeListEvent(identity, { listId, members, listKeyHex, data, createdAt }) {
+export async function makeListEvent(
+  identity,
+  { listId, members, listKeyHex, data, createdAt, type = data?.type === "household" ? "household" : "list" }
+) {
   const at = createdAt ?? Math.floor(Date.now() / 1000);
   data.updatedAt = at;
   const payload = await encryptList(listKeyHex, data);
   const tags = [
     ["d", `${D_LIST}${listId}`],
-    ["t", LIST_DATA],
+    ["t", type === "household" ? HOUSEHOLD_DATA : LIST_DATA],
   ];
   for (const m of [...new Set(members)].sort()) tags.push(["p", m]);
   const template = { kind: LIST_KIND, created_at: at, tags, content: payload };
@@ -193,11 +289,12 @@ export function parseListEvent(event) {
   if (!event || event.kind !== LIST_KIND) return null;
   const d = event.tags.find((t) => t[0] === "d");
   if (!d || !d[1].startsWith(D_LIST)) return null;
-  const t = event.tags.find((t) => t[0] === "t" && t[1] === LIST_DATA);
+  const t = event.tags.find((t) => t[0] === "t" && (t[1] === LIST_DATA || t[1] === HOUSEHOLD_DATA));
   if (!t) return null;
   const members = event.tags.filter((x) => x[0] === "p").map((x) => x[1]);
   return {
     listId: d[1].slice(D_LIST.length),
+    type: t[1] === HOUSEHOLD_DATA ? "household" : "list",
     members,
     payload: event.content,
     createdAt: event.created_at,

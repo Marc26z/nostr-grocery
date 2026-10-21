@@ -30,6 +30,12 @@ import {
   shortNpub,
   emptyList,
   newItem,
+  emptyHousehold,
+  newProduct,
+  newStockEntry,
+  productQty,
+  isLowStock,
+  consumeStock,
   encryptList,
   decryptList,
   randomHex,
@@ -68,9 +74,15 @@ const $ = (sel) => document.querySelector(sel);
 const loginView = $("#login-view");
 const listsView = $("#lists-view");
 const detailView = $("#detail-view");
+const householdView = $("#household-view");
 const modalEl = $("#modal");
 const modalBody = $("#modal-body");
 const toastEl = $("#toast");
+
+/* Household view UI state (reset whenever a household is opened). */
+let householdTab = "stock";
+let householdFilter = "all";
+let householdSearch = "";
 
 /* ------------------------------- state ---------------------------------- */
 
@@ -139,7 +151,7 @@ function saveMeta() {
 /* ------------------------------- helpers -------------------------------- */
 
 function show(el) {
-  for (const v of [loginView, listsView, detailView]) v.hidden = v !== el;
+  for (const v of [loginView, listsView, detailView, householdView]) v.hidden = v !== el;
 }
 
 function toast(text, ms = 2400) {
@@ -317,8 +329,14 @@ function startApp() {
   for (const [id, m] of Object.entries(meta)) {
     if (!m || !m.key) continue;
     const l = newList(id, { key: m.key, name: m.name, owner: m.owner });
-    if (m.data && typeof m.data === "object" && Array.isArray(m.data.items)) {
-      l.data = m.data;
+    const d = m.data;
+    const isHouseholdDoc = d && typeof d === "object" && d.type === "household";
+    if (d && typeof d === "object" && (Array.isArray(d.items) || isHouseholdDoc)) {
+      l.data = d;
+      if (isHouseholdDoc) {
+        if (!Array.isArray(l.data.products)) l.data.products = [];
+        if (!Array.isArray(l.data.stock)) l.data.stock = [];
+      }
       l.data.name = typeof l.data.name === "string" ? l.data.name : m.name || "Grocery list";
       l.name = l.data.name;
       l.createdAt = Number(m.createdAt) || 0;
@@ -347,10 +365,16 @@ function newList(id, opts = {}) {
     payloadAt: 0,
     createdAt: 0,
     author: null,
+    type: opts.type || null,
     members: new Set(),
     name: opts.name || "",
     locked: false,
   };
+}
+
+/** A doc is a household (product catalog + stock) when its data says so. */
+function isHousehold(l) {
+  return l?.data?.type === "household";
 }
 
 /* --------------------------- signer identity ----------------------------- */
@@ -494,6 +518,7 @@ async function ingest(ev) {
     l = newList(parsed.listId);
     state.lists.set(parsed.listId, l);
   }
+  if (parsed.type) l.type = parsed.type;
 
   if (parsed.createdAt >= l.createdAt) {
     l.createdAt = parsed.createdAt;
@@ -513,9 +538,16 @@ async function syncList(l, at) {
     const data = await decryptList(l.key, l.payload);
     if (at != null && l.payloadAt !== at) return; // a newer event arrived meanwhile
     if (data && typeof data === "object") {
-      if (!Array.isArray(data.items)) data.items = [];
-      data.name = typeof data.name === "string" ? data.name : l.name || "Grocery list";
+      const isHouseholdDoc = data.type === "household";
+      if (isHouseholdDoc) {
+        if (!Array.isArray(data.products)) data.products = [];
+        if (!Array.isArray(data.stock)) data.stock = [];
+      } else {
+        if (!Array.isArray(data.items)) data.items = [];
+      }
+      data.name = typeof data.name === "string" ? data.name : l.name || (isHouseholdDoc ? "Household" : "Grocery list");
       l.data = data;
+      l.type = isHouseholdDoc ? "household" : l.type || "list";
       l.name = data.name;
       l.locked = false;
       saveMeta();
@@ -551,9 +583,15 @@ function render() {
     return;
   }
   updateIdentityBtn();
-  if (state.openListId && state.lists.get(state.openListId)?.data) {
-    show(detailView);
-    renderDetail(state.lists.get(state.openListId));
+  const doc = state.openListId ? state.lists.get(state.openListId) : null;
+  if (doc && doc.data) {
+    if (isHousehold(doc)) {
+      show(householdView);
+      renderHousehold(doc);
+    } else {
+      show(detailView);
+      renderDetail(doc);
+    }
   } else {
     state.openListId = null;
     show(listsView);
@@ -575,7 +613,7 @@ function renderLists() {
   const hint = $("#waiting-hint");
   if (waiting.length) {
     hint.hidden = false;
-    hint.textContent = `${waiting.length} shared list${waiting.length > 1 ? "s" : ""} waiting for a key…`;
+    hint.textContent = `${waiting.length} shared item${waiting.length > 1 ? "s" : ""} waiting for a key…`;
   } else {
     hint.hidden = true;
   }
@@ -591,7 +629,14 @@ function renderLists() {
 
   grid.hidden = false;
   empty.hidden = true;
-  $("#lists-sub").textContent = `${ready.length} list${ready.length > 1 ? "s" : ""}`;
+  const listCount = ready.filter((l) => !isHousehold(l)).length;
+  const houseCount = ready.length - listCount;
+  $("#lists-sub").textContent = [
+    listCount ? `${listCount} list${listCount > 1 ? "s" : ""}` : "",
+    houseCount ? `${houseCount} household${houseCount > 1 ? "s" : ""}` : "",
+  ]
+    .filter(Boolean)
+    .join(" · ");
   grid.innerHTML = ready.map(cardHtml).join("");
   grid.querySelectorAll(".list-card").forEach((el) =>
     el.addEventListener("click", () => openList(el.dataset.id))
@@ -599,6 +644,10 @@ function renderLists() {
 }
 
 function cardHtml(l) {
+  return isHousehold(l) ? householdCardHtml(l) : listCardHtml(l);
+}
+
+function listCardHtml(l) {
   const items = l.data.items;
   const done = items.filter((i) => i.done).length;
   const pct = items.length ? Math.round((done / items.length) * 100) : 0;
@@ -617,6 +666,26 @@ function cardHtml(l) {
     </article>`;
 }
 
+function householdCardHtml(l) {
+  const products = l.data.products || [];
+  const stocked = products.filter((p) => productQty(l.data, p.id) > 0).length;
+  const lows = products.filter((p) => isLowStock(p, l.data)).length;
+  const pct = products.length ? Math.round((stocked / products.length) * 100) : 0;
+  const count = products.length
+    ? `${stocked}/${products.length} in stock${lows ? ` · ${lows} low` : ""}`
+    : "No products yet";
+  return `
+    <article class="list-card household-card" data-id="${l.id}" tabindex="0" role="button" aria-label="${escapeHtml(l.data.name)}">
+      <h3>🏡 ${escapeHtml(l.data.name)}</h3>
+      <div class="count">${count}</div>
+      <div class="bar"><span style="width:${pct}%"></span></div>
+      <div class="foot">
+        ${avatarsHtml(l.members)}
+        <span class="muted small">${l.members.size} member${l.members.size > 1 ? "s" : ""}</span>
+      </div>
+    </article>`;
+}
+
 function openList(id) {
   const l = state.lists.get(id);
   if (!l) return;
@@ -625,25 +694,19 @@ function openList(id) {
     return;
   }
   state.openListId = id;
+  if (isHousehold(l)) {
+    householdTab = "stock";
+    householdFilter = "all";
+    householdSearch = "";
+    const search = $("#h-search");
+    if (search) search.value = "";
+  }
   render();
 }
 
 function renderDetail(l) {
   $("#list-title").value = l.data.name;
-  const members = [...l.members];
-  $("#members-row").innerHTML = members.length
-    ? `<span class="muted small">Shared with</span>` +
-      members
-        .map(
-          (m) =>
-            `<span class="member-chip" title="${hexToNpub(m)}">${avatarsHtml(new Set([m]))}${shortNpub(
-              m,
-              8,
-              4
-            )}${m === state.identity.pubkey ? ' <span class="you-tag">you</span>' : ""}</span>`
-        )
-        .join("")
-    : "";
+  $("#members-row").innerHTML = membersRowHtml(l.members);
 
   const items = sortItems(l.data.items);
   $("#items-empty").hidden = items.length > 0;
@@ -663,6 +726,359 @@ function itemHtml(it) {
     </li>`;
 }
 
+function membersRowHtml(members) {
+  const list = [...members];
+  if (!list.length) return "";
+  return (
+    `<span class="muted small">Shared with</span>` +
+    list
+      .map(
+        (m) =>
+          `<span class="member-chip" title="${hexToNpub(m)}">${avatarsHtml(new Set([m]))}${shortNpub(
+            m,
+            8,
+            4
+          )}${m === state.identity.pubkey ? ' <span class="you-tag">you</span>' : ""}</span>`
+      )
+      .join("")
+  );
+}
+
+/* -------------------------- household rendering --------------------------- */
+
+function fmtQty(n) {
+  return String(Math.round((Number(n) || 0) * 100) / 100);
+}
+
+/** Whole days from today (local midnight) until a YYYY-MM-DD date. */
+function daysUntil(dateStr) {
+  const d = new Date(dateStr + "T00:00:00");
+  if (Number.isNaN(d.getTime())) return null;
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  return Math.round((d - today) / 86400000);
+}
+
+const isDateStr = (s) => typeof s === "string" && /^\d{4}-\d{2}-\d{2}$/.test(s);
+
+/** The soonest best-before date among a product's live stock entries. */
+function soonestExpiry(data, productId) {
+  let best = null;
+  for (const e of data.stock || []) {
+    if (e.productId !== productId || !(Number(e.qty) > 0) || !isDateStr(e.bestBefore)) continue;
+    if (!best || e.bestBefore < best) best = e.bestBefore;
+  }
+  return best;
+}
+
+function isExpiring(data, product) {
+  const soonest = soonestExpiry(data, product.id);
+  if (!soonest) return false;
+  const d = daysUntil(soonest);
+  return d != null && d <= 7;
+}
+
+function expiryBadges(data, productId) {
+  const soonest = soonestExpiry(data, productId);
+  if (!soonest) return "";
+  const d = daysUntil(soonest);
+  if (d == null) return "";
+  if (d < 0) return `<span class="badge badge-danger">expired</span>`;
+  if (d === 0) return `<span class="badge badge-warn">expires today</span>`;
+  if (d <= 7) return `<span class="badge badge-warn">expires in ${d}d</span>`;
+  return "";
+}
+
+function renderHousehold(l) {
+  if (!l || !isHousehold(l)) return;
+  $("#h-title").value = l.data.name;
+  $("#h-members-row").innerHTML = membersRowHtml(l.members);
+  document.querySelectorAll("#household-view .tab").forEach((t) =>
+    t.classList.toggle("active", t.dataset.tab === householdTab)
+  );
+  $("#h-stock-pane").hidden = householdTab !== "stock";
+  $("#h-products-pane").hidden = householdTab !== "products";
+  document.querySelectorAll("#h-chips .chip").forEach((c) =>
+    c.classList.toggle("active", c.dataset.filter === householdFilter)
+  );
+  renderStockList();
+  renderProductsList();
+}
+
+function renderStockList() {
+  const box = $("#h-stock-list");
+  if (!box) return;
+  const l = state.lists.get(state.openListId);
+  if (!l || !isHousehold(l)) {
+    box.innerHTML = "";
+    return;
+  }
+  const data = l.data;
+  const products = data.products || [];
+  if (products.length === 0) {
+    box.innerHTML = `
+      <div class="empty">
+        <p class="empty-icon">🥫</p>
+        <p class="muted">No products yet. Add your first one to start tracking stock.</p>
+        <div class="empty-actions">
+          <button class="btn btn-primary" type="button" data-act="new-product">+ New product</button>
+        </div>
+      </div>`;
+    return;
+  }
+  const q = householdSearch.trim().toLowerCase();
+  let rows = products.filter(
+    (p) => !q || p.name.toLowerCase().includes(q) || (p.category || "").toLowerCase().includes(q)
+  );
+  if (householdFilter === "low") rows = rows.filter((p) => isLowStock(p, data));
+  else if (householdFilter === "expiring") rows = rows.filter((p) => isExpiring(data, p));
+  if (rows.length === 0) {
+    box.innerHTML = `<p class="muted small">No matching products.</p>`;
+    return;
+  }
+  const groups = new Map();
+  for (const p of [...rows].sort((a, b) => a.name.localeCompare(b.name))) {
+    const k = p.category || "";
+    if (!groups.has(k)) groups.set(k, []);
+    groups.get(k).push(p);
+  }
+  const keys = [...groups.keys()].sort((a, b) => {
+    if (!a) return 1;
+    if (!b) return -1;
+    return a.localeCompare(b);
+  });
+  box.innerHTML = keys
+    .map(
+      (k) =>
+        `<div class="cat-head">${escapeHtml(k || "Uncategorized")}</div>` +
+        groups
+          .get(k)
+          .map((p) => stockRowHtml(l, p))
+          .join("")
+    )
+    .join("");
+}
+
+function stockRowHtml(l, p) {
+  const qty = productQty(l.data, p.id);
+  const badges = (isLowStock(p, l.data) ? `<span class="badge badge-low">low</span>` : "") + expiryBadges(l.data, p.id);
+  return `
+    <div class="stock-row" data-id="${p.id}">
+      <button class="stock-main" type="button" data-act="product">
+        <span class="stock-name">${escapeHtml(p.name)} ${badges}</span>
+        <span class="stock-qty">${fmtQty(qty)} ${escapeHtml(p.unit)}</span>
+      </button>
+      <button class="qty-btn" type="button" data-act="consume" aria-label="Use some ${escapeHtml(p.name)}">−</button>
+      <button class="qty-btn" type="button" data-act="buy" aria-label="Buy ${escapeHtml(p.name)}">+</button>
+    </div>`;
+}
+
+function renderProductsList() {
+  const box = $("#h-products-list");
+  if (!box) return;
+  const l = state.lists.get(state.openListId);
+  if (!l || !isHousehold(l)) {
+    box.innerHTML = "";
+    return;
+  }
+  const products = [...(l.data.products || [])].sort((a, b) => a.name.localeCompare(b.name));
+  if (products.length === 0) {
+    box.innerHTML = `<p class="muted small">No products yet. Use <b>+ New product</b> to build your catalog.</p>`;
+    return;
+  }
+  box.innerHTML = products.map((p) => productRowHtml(l, p)).join("");
+}
+
+function productRowHtml(l, p) {
+  const meta = [p.category || "", `${fmtQty(productQty(l.data, p.id))} ${p.unit}`, p.minQty > 0 ? `min ${fmtQty(p.minQty)}` : ""]
+    .filter(Boolean)
+    .map(escapeHtml)
+    .join(" · ");
+  return `
+    <div class="product-row" data-id="${p.id}" tabindex="0" role="button">
+      <div class="product-info">
+        <span class="product-name">${escapeHtml(p.name)}</span>
+        <span class="product-meta muted small">${meta}</span>
+      </div>
+      <span class="product-qty">${fmtQty(productQty(l.data, p.id))} ${escapeHtml(p.unit)}</span>
+    </div>`;
+}
+
+/* --------------------------- household modals ----------------------------- */
+
+function openProductModal(product) {
+  const l = state.lists.get(state.openListId);
+  if (!l || !isHousehold(l)) return;
+  const data = l.data;
+  const editing = !!product;
+  const cats = [...new Set((data.products || []).map((p) => p.category).filter(Boolean))].sort();
+
+  const entriesWrapHtml = () => {
+    const entries = (data.stock || [])
+      .filter((e) => e.productId === product.id)
+      .sort((a, b) => (b.addedAt || 0) - (a.addedAt || 0));
+    const body = entries.length
+      ? `<ul class="entry-list">${entries
+          .map(
+            (e) => `
+          <li>
+            <span class="entry-qty">${fmtQty(e.qty)} ${escapeHtml(product.unit)}</span>
+            <span class="muted small">${e.bestBefore ? "by " + escapeHtml(e.bestBefore) : "no date"}</span>
+            <button class="del" type="button" data-entry="${e.id}" aria-label="Remove this stock entry">×</button>
+          </li>`
+          )
+          .join("")}</ul>`
+      : `<p class="muted small">Not in stock yet.</p>`;
+    return `<div id="p-entries-wrap"><h3>In stock: ${fmtQty(productQty(data, product.id))} ${escapeHtml(
+      product.unit
+    )}</h3>${body}</div>`;
+  };
+
+  openModal(
+    `
+    <h2>${editing ? "Edit product" : "New product"}</h2>
+    <form id="prod-form">
+      <label class="field-label" for="p-name">Name</label>
+      <input id="p-name" class="input" required maxlength="120" value="${editing ? escapeHtml(product.name) : ""}" />
+      <label class="field-label" for="p-cat">Category</label>
+      <input id="p-cat" class="input" list="cat-list" maxlength="60" placeholder="Dairy, Produce, …" value="${
+        editing ? escapeHtml(product.category) : ""
+      }" />
+      <datalist id="cat-list">${cats.map((c) => `<option value="${escapeHtml(c)}"></option>`).join("")}</datalist>
+      <label class="field-label" for="p-unit">Unit</label>
+      <input id="p-unit" class="input" maxlength="16" placeholder="pcs, g, l, …" value="${
+        editing ? escapeHtml(product.unit) : "pcs"
+      }" />
+      <label class="field-label" for="p-min">Minimum stock (0 = no minimum)</label>
+      <input id="p-min" class="input" type="number" min="0" step="any" value="${editing ? product.minQty : 0}" />
+      ${editing ? entriesWrapHtml() : ""}
+      <div class="share-row">
+        <button class="btn btn-primary btn-block" type="submit">${editing ? "Save" : "Add product"}</button>
+      </div>
+      ${
+        editing
+          ? `<div class="share-row"><button id="p-delete" class="btn btn-danger btn-block" type="button">Delete product</button></div>`
+          : ""
+      }
+    </form>`,
+    (root) => {
+      const nameInput = root.querySelector("#p-name");
+      nameInput.focus();
+      nameInput.select();
+      root.querySelector("#prod-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const name = nameInput.value.trim();
+        if (!name) return;
+        const category = root.querySelector("#p-cat").value.trim();
+        const unit = root.querySelector("#p-unit").value.trim() || "pcs";
+        const minQty = Math.max(0, Number(root.querySelector("#p-min").value) || 0);
+        closeModal();
+        if (editing) {
+          mutate((d) => Object.assign(product, { name, category, unit, minQty, updatedAt: Math.floor(Date.now() / 1000) }));
+          toast("Product saved");
+        } else {
+          mutate((d) => d.products.push(newProduct({ name, category, unit, minQty })));
+          toast("Product added");
+        }
+      });
+      if (editing) {
+        root.addEventListener("click", (e) => {
+          const del = e.target.closest("[data-entry]");
+          if (del) {
+            const entryId = del.dataset.entry;
+            mutate((d) => {
+              d.stock = (d.stock || []).filter((x) => x.id !== entryId);
+            });
+            root.querySelector("#p-entries-wrap").innerHTML = entriesWrapHtml();
+            return;
+          }
+          if (e.target.id === "p-delete") {
+            confirmAction(
+              "Delete this product?",
+              "Its stock entries will be removed too. Members will see the change after they sync.",
+              "Delete"
+            ).then((ok) => {
+              if (!ok) {
+                openProductModal(product);
+                return;
+              }
+              closeModal();
+              mutate((d) => {
+                d.products = d.products.filter((x) => x.id !== product.id);
+                d.stock = (d.stock || []).filter((x) => x.productId !== product.id);
+              });
+              toast("Product deleted");
+            });
+          }
+        });
+      }
+    }
+  );
+}
+
+function openBuyModal(product) {
+  openModal(
+    `
+    <h2>Buy ${escapeHtml(product.name)}</h2>
+    <form id="buy-form">
+      <label class="field-label" for="b-qty">Quantity (${escapeHtml(product.unit)})</label>
+      <input id="b-qty" class="input" type="number" min="0.01" step="any" value="1" />
+      <label class="field-label" for="b-fbb">Best before (optional)</label>
+      <input id="b-fbb" class="input" type="date" />
+      <div class="share-row"><button class="btn btn-primary btn-block" type="submit">Add to stock</button></div>
+    </form>`,
+    (root) => {
+      const qty = root.querySelector("#b-qty");
+      qty.focus();
+      qty.select();
+      root.querySelector("#buy-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const n = Number(qty.value);
+        if (!(n > 0)) return;
+        const bestBefore = root.querySelector("#b-fbb").value || null;
+        closeModal();
+        mutate((d) => d.stock.push(newStockEntry(product.id, n, bestBefore, state.identity.pubkey)));
+        toast(`+${fmtQty(n)} ${product.unit} in stock`);
+      });
+    }
+  );
+}
+
+function openConsumeModal(product) {
+  const l = state.lists.get(state.openListId);
+  const total = l && isHousehold(l) ? productQty(l.data, product.id) : 0;
+  if (!(total > 0)) {
+    toast("Nothing in stock");
+    return;
+  }
+  openModal(
+    `
+    <h2>Use ${escapeHtml(product.name)}</h2>
+    <p class="muted small">${fmtQty(total)} ${escapeHtml(product.unit)} in stock — entries closest to their best-before date go first.</p>
+    <form id="eat-form">
+      <label class="field-label" for="e-qty">Quantity (${escapeHtml(product.unit)})</label>
+      <input id="e-qty" class="input" type="number" min="0.01" step="any" max="${total}" value="${Math.min(1, total)}" />
+      <div class="share-row"><button class="btn btn-primary btn-block" type="submit">Remove from stock</button></div>
+    </form>`,
+    (root) => {
+      const qty = root.querySelector("#e-qty");
+      qty.focus();
+      qty.select();
+      root.querySelector("#eat-form").addEventListener("submit", (e) => {
+        e.preventDefault();
+        const want = Number(qty.value);
+        if (!(want > 0)) return;
+        closeModal();
+        let got = 0;
+        mutate((d) => {
+          got = consumeStock(d, product.id, want);
+        });
+        toast(got < want ? `Only ${fmtQty(got)} ${product.unit} was in stock` : `Used ${fmtQty(got)} ${product.unit}`);
+      });
+    }
+  );
+}
+
 /* ------------------------------- actions --------------------------------- */
 
 async function createList(name) {
@@ -680,6 +1096,26 @@ async function createList(name) {
 
   await publishList(l);
   await publishGrant(l, state.identity.pubkey); // self-grant: lets you re-open on other devices
+}
+
+async function createHousehold(name) {
+  const id = randomHex(16);
+  const key = randomHex(32);
+  const l = newList(id, { key, name, type: "household" });
+  l.data = emptyHousehold(name || "Household");
+  l.members.add(state.identity.pubkey);
+  l.owner = state.identity.pubkey;
+  state.lists.set(id, l);
+  saveMeta();
+
+  state.openListId = id;
+  householdTab = "stock";
+  householdFilter = "all";
+  householdSearch = "";
+  render();
+
+  await publishList(l);
+  await publishGrant(l, state.identity.pubkey); // self-grant across your devices
 }
 
 async function publishList(l) {
@@ -725,7 +1161,8 @@ function mutate(fn) {
   fn(l.data);
   l.name = l.data.name;
   saveMeta();
-  renderDetail(l);
+  if (isHousehold(l)) renderHousehold(l);
+  else renderDetail(l);
   queuePublish(l);
 }
 
@@ -814,7 +1251,7 @@ function importInviteFromHash() {
   if (!m) return;
   try {
     joinWithKey(m[1]);
-    toast("List added");
+    toast("Added");
   } catch (_) {
     /* ignore malformed invite */
   }
@@ -924,7 +1361,7 @@ function openShareModal() {
     `
     <h2>Share “${escapeHtml(l.data.name)}”</h2>
     <p class="muted small">
-      Add someone by npub. They receive the list key encrypted to their key, so only they can read it.
+      Add someone by npub. They receive the key encrypted to their key, so only they can read it.
     </p>
     <form id="share-form" class="share-row">
       <input id="share-input" class="input" placeholder="npub1… or nprofile…" autocomplete="off" spellcheck="false" />
@@ -934,14 +1371,14 @@ function openShareModal() {
     <h3>Members</h3>
     <ul class="members-list">${renderMembers()}</ul>
     <div class="invite">
-      <label class="field-label">List key</label>
+      <label class="field-label">Key</label>
       <div class="copy-row">
         <code id="list-key" class="copy-code key-code"></code>
         <button id="copy-key" class="btn" type="button">Copy</button>
       </div>
       <p class="muted small" style="margin-top:8px">
         On their device, open Grocery → <strong>Join</strong> and paste this key. Anyone who
-        has it can read and edit this list, so share it only with people you trust.
+        has it can read and edit this ${isHousehold(l) ? "household" : "list"}, so share it only with people you trust.
       </p>
     </div>`,
     () => {
@@ -973,14 +1410,14 @@ function openShareModal() {
 function openJoinModal() {
   openModal(
     `
-    <h2>Join a list</h2>
+    <h2>Join a list or household</h2>
     <p class="muted small">
-      Paste the list key someone shared with you. It starts with “${LIST_KEY_TAG}”.
+      Paste the key someone shared with you. It starts with “${LIST_KEY_TAG}”.
     </p>
     <form id="join-form">
       <input id="join-input" class="input" placeholder="${LIST_KEY_TAG}…" autocomplete="off" spellcheck="false" />
       <p id="join-error" class="error" hidden></p>
-      <div class="share-row"><button class="btn btn-primary btn-block" type="submit">Join list</button></div>
+      <div class="share-row"><button class="btn btn-primary btn-block" type="submit">Join</button></div>
     </form>`,
     () => {
       const input = $("#join-input");
@@ -992,7 +1429,7 @@ function openJoinModal() {
         try {
           const l = joinWithKey(input.value);
           closeModal();
-          toast("List added");
+          toast("Added");
           if (l.data) openList(l.id);
         } catch (ex) {
           err.textContent = ex.message || "Could not join";
@@ -1004,9 +1441,10 @@ function openJoinModal() {
 }
 
 async function deleteList(l) {
+  const what = isHousehold(l) ? "household" : "list";
   const ok = await confirmAction(
-    "Delete this list?",
-    "This removes the list from your device and deletes the copy you published. Other members keep their own copy."
+    `Delete this ${what}?`,
+    `This removes the ${what} from your device and deletes the copy you published. Other members keep their own copy.`
   );
   if (!ok) return;
   const del = {
@@ -1025,7 +1463,7 @@ async function deleteList(l) {
   state.lists.delete(l.id);
   state.openListId = null;
   saveMeta();
-  toast("List deleted");
+  toast(`${what[0].toUpperCase()}${what.slice(1)} deleted`);
   render();
 }
 
@@ -1119,6 +1557,77 @@ function bindUI() {
   $("#join-list-btn").addEventListener("click", openJoinModal);
   $("#empty-join-btn").addEventListener("click", openJoinModal);
 
+  // household
+  $("#new-household-btn").addEventListener("click", promptNewHousehold);
+  const emptyHouseholdBtn = $("#empty-household-btn");
+  if (emptyHouseholdBtn) emptyHouseholdBtn.addEventListener("click", promptNewHousehold);
+  $("#h-back-btn").addEventListener("click", () => {
+    state.openListId = null;
+    render();
+  });
+  $("#h-share-btn").addEventListener("click", openShareModal);
+  $("#h-delete-btn").addEventListener("click", () => {
+    const l = state.lists.get(state.openListId);
+    if (l) deleteList(l);
+  });
+  $("#h-title").addEventListener("input", (e) => {
+    const l = state.lists.get(state.openListId);
+    if (!l || !l.data) return;
+    l.data.name = e.target.value;
+    l.name = e.target.value;
+    saveMeta();
+    queuePublish(l);
+  });
+  document.querySelectorAll("#household-view .tab").forEach((t) =>
+    t.addEventListener("click", () => {
+      householdTab = t.dataset.tab;
+      renderHousehold(state.lists.get(state.openListId));
+    })
+  );
+  document.querySelectorAll("#h-chips .chip").forEach((c) =>
+    c.addEventListener("click", () => {
+      householdFilter = c.dataset.filter;
+      renderHousehold(state.lists.get(state.openListId));
+    })
+  );
+  $("#h-search").addEventListener("input", (e) => {
+    householdSearch = e.target.value;
+    renderStockList();
+  });
+  $("#h-new-product").addEventListener("click", () => openProductModal(null));
+  $("#h-stock-list").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-act]");
+    if (!btn) return;
+    const act = btn.dataset.act;
+    if (act === "new-product") {
+      openProductModal(null);
+      return;
+    }
+    const row = btn.closest("[data-id]");
+    const l = state.lists.get(state.openListId);
+    if (!row || !l || !isHousehold(l)) return;
+    const product = (l.data.products || []).find((p) => p.id === row.dataset.id);
+    if (!product) return;
+    if (act === "product") openProductModal(product);
+    else if (act === "buy") openBuyModal(product);
+    else if (act === "consume") openConsumeModal(product);
+  });
+  const openProductFromRow = (e) => {
+    const row = e.target.closest(".product-row");
+    if (!row) return;
+    const l = state.lists.get(state.openListId);
+    if (!l || !isHousehold(l)) return;
+    const product = (l.data.products || []).find((p) => p.id === row.dataset.id);
+    if (product) openProductModal(product);
+  };
+  $("#h-products-list").addEventListener("click", openProductFromRow);
+  $("#h-products-list").addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      openProductFromRow(e);
+    }
+  });
+
   // detail
   $("#back-btn").addEventListener("click", () => {
     state.openListId = null;
@@ -1198,6 +1707,16 @@ function bindUI() {
 async function promptNewList() {
   const name = await askText({ title: "New list", label: "List name", placeholder: "Groceries", okLabel: "Create" });
   if (name) await createList(name);
+}
+
+async function promptNewHousehold() {
+  const name = await askText({
+    title: "New household",
+    label: "Household name",
+    placeholder: "Home",
+    okLabel: "Create",
+  });
+  if (name) await createHousehold(name);
 }
 
 function openSignerModal() {

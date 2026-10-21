@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Grocery — a shared list on Nostr</title>
-  <meta name="description" content="A shared, end-to-end encrypted grocery list over Nostr. No server, no account." />
+  <meta name="description" content="A shared, end-to-end encrypted grocery list and household pantry over Nostr. No server, no account." />
   <meta name="theme-color" content="#12160f" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-title" content="Grocery" />
@@ -50,8 +50,8 @@
       <div class="login-card">
         <h1 class="login-title">🧺 Grocery</h1>
         <p class="muted">
-          A shared shopping list that lives on Nostr relays, encrypted end-to-end.
-          Only the people you invite can read or change it — no server, no account.
+          A shared shopping list and household pantry that live on Nostr relays, encrypted
+          end-to-end. Only the people you invite can read or change them — no server, no account.
         </p>
         <div id="ext-slot"></div>
         <button id="signer-btn" class="btn btn-block signer-btn" type="button">
@@ -107,6 +107,7 @@
         </div>
         <div class="head-btns">
           <button id="join-list-btn" class="btn" type="button">Join</button>
+          <button id="new-household-btn" class="btn" type="button">🏡 Household</button>
           <button id="new-list-btn" class="btn btn-primary" type="button">+ New list</button>
         </div>
       </div>
@@ -114,9 +115,10 @@
       <div id="lists-empty" class="empty" hidden>
         <p class="empty-icon">🧺</p>
         <h2>No lists yet</h2>
-        <p class="muted">Create a list, then share it with other npubs. It syncs over relays.</p>
+        <p class="muted">Create a list or a household, then share it with other npubs. It syncs over relays.</p>
         <div class="empty-actions">
           <button id="empty-new-btn" class="btn btn-primary" type="button">Create your first list</button>
+          <button id="empty-household-btn" class="btn" type="button">🏡 Create a household</button>
           <button id="empty-join-btn" class="btn" type="button">Join with a list key</button>
         </div>
       </div>
@@ -149,13 +151,50 @@
         <button id="delete-list-btn" class="btn btn-danger" type="button">Delete list</button>
       </div>
     </section>
+
+    <!-- Household (product catalog + stock) --------------------------------->
+    <section id="household-view" class="view" hidden>
+      <div class="detail-head">
+        <button id="h-back-btn" class="btn btn-ghost" type="button">← Lists</button>
+        <input id="h-title" class="title-input" aria-label="Household name" />
+        <div class="head-actions">
+          <button id="h-share-btn" class="btn" type="button">Share</button>
+          <button id="h-delete-btn" class="btn btn-ghost" type="button" title="Delete household">🗑</button>
+        </div>
+      </div>
+      <div id="h-members-row" class="members"></div>
+
+      <div class="tabs" role="tablist">
+        <button class="tab active" type="button" data-tab="stock">Stock</button>
+        <button class="tab" type="button" data-tab="products">Products</button>
+      </div>
+
+      <div id="h-stock-pane">
+        <div class="stock-tools">
+          <input id="h-search" class="input" placeholder="Search products or categories…" maxlength="80" />
+          <div id="h-chips" class="chips">
+            <button class="chip active" type="button" data-filter="all">All</button>
+            <button class="chip" type="button" data-filter="low">Low</button>
+            <button class="chip" type="button" data-filter="expiring">Expiring</button>
+          </div>
+        </div>
+        <div id="h-stock-list" class="stock-list"></div>
+      </div>
+
+      <div id="h-products-pane" hidden>
+        <div class="products-head">
+          <button id="h-new-product" class="btn btn-primary" type="button">+ New product</button>
+        </div>
+        <div id="h-products-list" class="product-list"></div>
+      </div>
+    </section>
   </main>
 
   <footer class="site-footer">
     <div class="wrap">
       <p class="muted small">
-        Lists are encrypted in your browser and stored on public Nostr relays.
-        Sharing hands over the list key, encrypted to each member's key.
+        Lists and households are encrypted in your browser and stored on public Nostr relays.
+        Sharing hands over the key, encrypted to each member's key.
       </p>
     </div>
   </footer>

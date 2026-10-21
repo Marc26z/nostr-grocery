@@ -2,10 +2,10 @@
 
 *I vibe-coded a simple grocery list app that I can share with my household. I used open-code on an Omarchy Android app that basically turns your phone into an arch linux computer.  It's the free version. I had to ask Deepseek Pro to fix some bugs, but it was able to fix the bugs based on that information. It was also able to bpush it to github and host it on a github domain. Then I heard Max Hillebrand suggest we should try adding Marmot Protocol messages. Like a famous genie once said, "your wish is my command." Now I can talk about my grocery list in private because... Why not? I can ask my wife to pick up some raw milk our milk dealer. Just kidding. Buying raw milk may or may not be a crime in your area. Check with the local milk police. Please follow all milk laws.*
 
-A **shared, end-to-end encrypted shopping list** that lives on Nostr and run
-entirely in the browser. Create a list, invite other npubs, and everyone sees
-live updates — without any server, account, or database. Relays only ever store
-ciphertext.
+A **shared, end-to-end encrypted shopping list and household pantry** that lives
+on Nostr and runs entirely in the browser. Create a list or a household, invite
+other npubs, and everyone sees live updates — without any server, account, or
+database. Relays only ever store ciphertext.
 
 Live: `https://marc26z.github.io/nostr-grocery/` _(once GitHub Pages is enabled)_
 
@@ -52,6 +52,29 @@ member ◄─ decrypt K ── read/edit list ────────► relay
   people you trust. On another device, **Join** and paste the key to open the list.
 - The self-grant means signing in with the same `nsec` on another device
   restores your lists.
+
+## Households (product catalog & stock)
+
+Grocy-style pantry tracking, minus the server: **🏡 Household** creates a
+shared document with a product catalog and live stock. It uses the exact same
+encryption and key-grant mechanism as a list, so you share it the same way
+(by npub, by key, or by self-grant across your devices).
+
+- **Products** — name, category, unit (`pcs`, `g`, `l`, …) and an optional
+  minimum stock level. Categories are free text and suggest what you've used
+  before.
+- **Stock** — each purchase adds a stock entry (quantity + optional best-before
+  date). Consuming takes quantity out **FEFO**: entries closest to their
+  best-before date are used first. The app never lets stock go negative.
+- **Stock view** groups products by category and flags **low** items (below
+  their minimum) and **expiring** ones (best-before within a week, or already
+  expired). Search and the All / Low / Expiring filters narrow it down.
+- **+** on a stock row adds a purchase, **−** consumes, and tapping the name
+  edits the product and its individual stock entries.
+
+Everything is one encrypted JSON document (`{type: "household", products, stock}`)
+published as a `grocery-household` event, so it syncs and shares exactly like a
+list. Older list-only clients ignore it instead of showing an empty list.
 
 ## Signing in with a mobile signer (NIP-46)
 
@@ -146,6 +169,8 @@ which needs no Android SDK, JDK or Gradle.
 
 - List + key-grant events are kind `30078` ([NIP-78]) so they are addressable
   (one live version per author per list) and namespaced by their `d` tag.
+  Lists carry `t: grocery-list`; household documents (products + stock) carry
+  `t: grocery-household` but share the `grocery:<id>` / key-grant namespace.
 - Symmetric content: AES-256-GCM, `iv ‖ ciphertext`, base64.
 - Key transport: NIP-44 v2, tagged `glk44:`; NIP-04 fallback, tagged `glk04:`.
 - Data deletion uses a kind `5` ([NIP-09]) event pointing at your own copy.

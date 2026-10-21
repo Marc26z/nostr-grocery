@@ -7,7 +7,7 @@
   "scripts": {
     "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/vendor-marmot.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/marmot.js && esbuild src/qr.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/qr.js",
     "serve": "perl serve.pl",
-    "test": "node --test --test-force-exit test/core.test.mjs test/marmot.test.mjs test/publish-queue.test.mjs test/app.smoke.mjs test/passkey.smoke.mjs"
+    "test": "node --test --test-force-exit test/core.test.mjs test/household.test.mjs test/marmot.test.mjs test/publish-queue.test.mjs test/app.smoke.mjs test/household.smoke.mjs test/passkey.smoke.mjs"
   },
   "license": "MIT",
   "devDependencies": {

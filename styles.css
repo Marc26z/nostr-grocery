@@ -463,3 +463,156 @@ main { flex: 1 0 auto; padding: 22px 0 40px; }
   display: flex;
   gap: 0.5rem;
 }
+
+/* ----------------------------- household --------------------------------- */
+.tabs {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 14px;
+  border-bottom: 1px solid var(--border);
+}
+.tab {
+  font: inherit;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  padding: 8px 12px;
+  cursor: pointer;
+  margin-bottom: -1px;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); border-bottom-color: var(--accent); }
+
+.stock-tools { display: flex; flex-direction: column; gap: 10px; margin-bottom: 14px; }
+.chips { display: flex; gap: 8px; flex-wrap: wrap; }
+.chip {
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 5px 12px;
+  cursor: pointer;
+}
+.chip:hover { background: var(--btn-hover); }
+.chip.active { background: var(--accent); border-color: var(--accent-strong); color: var(--accent-ink); }
+
+.cat-head {
+  font-size: 0.74rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--muted);
+  margin: 16px 0 6px;
+}
+.cat-head:first-child { margin-top: 0; }
+
+.stock-list { display: flex; flex-direction: column; gap: 6px; }
+.stock-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+}
+.stock-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  text-align: left;
+  font: inherit;
+  color: var(--text);
+  background: transparent;
+  border: none;
+  padding: 4px 2px;
+  cursor: pointer;
+  border-radius: 6px;
+}
+.stock-main:hover { background: var(--btn-hover); }
+.stock-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.stock-qty { font-size: 0.8rem; color: var(--muted); }
+.qty-btn {
+  font: inherit;
+  font-size: 1.05rem;
+  font-weight: 700;
+  line-height: 1;
+  width: 34px;
+  height: 34px;
+  flex: none;
+  color: var(--text);
+  background: var(--bg-elev-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  cursor: pointer;
+}
+.qty-btn:hover { background: var(--btn-hover); border-color: var(--border-strong); }
+
+.badge {
+  display: inline-block;
+  font-size: 0.66rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  border-radius: 999px;
+  padding: 1px 7px;
+  vertical-align: middle;
+  margin-left: 4px;
+}
+.badge-low { color: var(--warn); border: 1px solid var(--warn); background: transparent; }
+.badge-warn { color: var(--accent-ink); background: var(--warn); }
+.badge-danger { color: #fff; background: var(--danger); }
+
+.products-head { display: flex; justify-content: flex-end; margin-bottom: 12px; }
+.product-list { display: flex; flex-direction: column; gap: 6px; }
+.product-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 10px 12px;
+  cursor: pointer;
+  transition: border-color 0.12s;
+}
+.product-row:hover { border-color: var(--border-strong); }
+.product-info { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.product-name { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-meta { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.product-qty { font-size: 0.85rem; color: var(--muted); white-space: nowrap; }
+
+.entry-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.entry-list li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 10px;
+  font-size: 0.88rem;
+}
+.entry-qty { font-weight: 600; }
+.entry-list .muted { flex: 1; }
+.entry-list .del {
+  border: none;
+  background: transparent;
+  color: var(--muted);
+  font-size: 1.1rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+.entry-list .del:hover { color: var(--danger); background: var(--btn-hover); }
+
+.household-card { border-left: 3px solid var(--accent); }
