@@ -54,13 +54,13 @@
           end-to-end. Only the people you invite can read or change them — no server, no account.
         </p>
         <div id="ext-slot"></div>
-        <button id="signer-btn" class="btn btn-block signer-btn" type="button">
-          <span class="signer-ico" aria-hidden="true">📱</span>
-          <span>Sign in with a signer app (Amber…)</span>
-        </button>
         <button id="passkey-btn" class="btn btn-block signer-btn" type="button" hidden>
           <span class="signer-ico" aria-hidden="true">🔐</span>
           <span class="passkey-label">Create an identity with a passkey</span>
+        </button>
+        <button id="google-passkey-btn" class="btn btn-block signer-btn" type="button" hidden>
+          <span class="signer-ico g-logo" aria-hidden="true">G</span>
+          <span>Sign in with Google (passkey)</span>
         </button>
         <p id="passkey-error" class="error" hidden></p>
         <button id="gen-btn" class="btn btn-primary btn-block" type="button">Create a new identity</button>
@@ -73,8 +73,8 @@
           <p id="login-error" class="error" hidden></p>
         </details>
         <p class="muted small">
-          Your secret key stays on your device. Signing in with a signer app keeps it
-          there — this app never sees it.
+          Your secret key stays on your device. A passkey signs in on every device
+          it syncs to — this app never sees your key.
         </p>
       </div>
 

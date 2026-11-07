@@ -1,4 +1,4 @@
-/* Adapts a Grocery identity (local / NIP-07 / NIP-46 / passkey) into the
+/* Adapts a Grocery identity (local / NIP-07 / passkey) into the
  * `EventSigner` shape the Marmot client expects. The identity already exposes
  * a plain NIP-44 implementation, which Marmot needs for MLS gift wrapping. */
 export function wrapIdentityAsSigner(identity) {

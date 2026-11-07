@@ -12,21 +12,15 @@ import {
   newLocalIdentity,
   createLocalIdentity,
   createNip07Identity,
-  createNip46Identity,
   createPasskeyIdentity,
   createPasskeySecret,
   passkeySecret,
+  anyPasskeySecret,
   passkeysSupported,
-  createBunkerSigner,
-  connectBunkerLink,
-  bunkerUserPubkey,
-  makeNostrConnect,
-  awaitNostrConnect,
   encodeSecret,
   decodeSecret,
   npubToHex,
   hexToNpub,
-  hexToBytes,
   shortNpub,
   emptyList,
   newItem,
@@ -38,6 +32,8 @@ import {
   consumeStock,
   encryptList,
   decryptList,
+  encryptNote,
+  decryptNote,
   randomHex,
   makeListEvent,
   makeKeyGrant,
@@ -47,7 +43,6 @@ import {
   listDTag,
 } from "./src/core.js";
 import { SimplePool } from "./vendor/nostr.js";
-import { qrSvg } from "./vendor/qr.js";
 import { createMarmotAdapter } from "./src/marmot.js";
 import { wrapIdentityAsSigner } from "./src/marmot-identity.js";
 import { createPublishQueue } from "./src/publish-queue.js";
@@ -63,10 +58,6 @@ const RELAYS = [
   "wss://nostr.mom",
   "wss://relay.snort.social",
 ];
-
-// Relays used for NIP-46 signer chatter (kind 24133). They must forward
-// ephemeral events addressed to us with a `p` tag.
-const SIGNER_RELAYS = ["wss://nos.lol", "wss://relay.damus.io", "wss://relay.primal.net", "wss://nostr.mom"];
 
 /* -------------------------------- dom ----------------------------------- */
 
@@ -210,6 +201,8 @@ async function boot() {
   state.pool = new SimplePool();
   state.queue = createPublishQueue({ pool: state.pool, relays: RELAYS, store });
 
+  store.del("gl_nip46"); // remote signer sessions are gone
+
   const sk = store.get("gl_sk");
   if (sk) {
     try {
@@ -217,8 +210,6 @@ async function boot() {
     } catch (_) {
       store.del("gl_sk");
     }
-  } else if (store.get("gl_nip46")) {
-    state.identity = restoreNip46();
   } else if (store.get("gl_ext") === true && window.nostr) {
     state.identity = createNip07Identity();
     await state.identity.init();
@@ -266,13 +257,18 @@ function setupPasskeyButton() {
     ? "Unlock with your passkey"
     : "Create an identity with a passkey";
   btn.addEventListener("click", () => (hasKey ? unlockWithPasskey() : createWithPasskey()));
+
+  const gbtn = $("#google-passkey-btn");
+  if (gbtn) {
+    gbtn.hidden = false;
+    gbtn.addEventListener("click", signInWithGooglePasskey);
+  }
 }
 
 function adoptIdentity(id) {
   state.identity = id;
   store.del("gl_sk");
   store.del("gl_ext");
-  store.del("gl_nip46");
   initMarmot();
   startApp();
 }
@@ -314,6 +310,29 @@ async function unlockWithPasskey() {
   }
 }
 
+/**
+ * Sign in with a passkey the browser already knows — Google Password
+ * Manager, iCloud Keychain, a security key. The browser shows its account
+ * picker and the chosen passkey derives the same key everywhere it syncs.
+ */
+async function signInWithGooglePasskey() {
+  const btn = $("#google-passkey-btn");
+  passkeyError("");
+  btn.disabled = true;
+  try {
+    const { secretKey, credentialId } = await anyPasskeySecret();
+    if (credentialId) store.set("gl_passkey", { id: credentialId });
+    adoptIdentity(createPasskeyIdentity(secretKey, credentialId));
+    toast("Signed in with your passkey");
+  } catch (e) {
+    if (e?.name !== "NotAllowedError" && e?.name !== "AbortError") {
+      passkeyError(e.message || "Could not sign in with a passkey");
+    }
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 function loginError(msg) {
   const el = $("#login-error");
   el.textContent = msg;
@@ -346,6 +365,8 @@ function startApp() {
     state.lists.set(id, l);
   }
 
+  for (const l of state.lists.values()) decryptNotes(l);
+
   importInviteFromHash();
   connect();
   startConnPoll();
@@ -361,6 +382,7 @@ function newList(id, opts = {}) {
     key: opts.key || null,
     owner: opts.owner || null,
     data: null,
+    notes: new Map(), // item id -> decrypted NIP-44 note (memory only)
     payload: null,
     payloadAt: 0,
     createdAt: 0,
@@ -375,69 +397,6 @@ function newList(id, opts = {}) {
 /** A doc is a household (product catalog + stock) when its data says so. */
 function isHousehold(l) {
   return l?.data?.type === "household";
-}
-
-/* --------------------------- signer identity ----------------------------- */
-
-let signerAbort = null;
-
-function clientMetadata() {
-  return { name: "Grocery", url: location.origin + location.pathname };
-}
-
-function saveNip46({ clientSecretKey, remotePubkey, relays, secret, userPubkey }) {
-  store.set("gl_nip46", {
-    sk: bytesToHex(clientSecretKey),
-    remote: remotePubkey,
-    relays,
-    secret: secret || null,
-    user: userPubkey,
-  });
-}
-
-function restoreNip46() {
-  const c = store.get("gl_nip46");
-  if (!c || !c.sk || !c.remote || !c.user || !Array.isArray(c.relays)) return null;
-  try {
-    const signer = createBunkerSigner({
-      clientSecretKey: hexToBytes(c.sk),
-      remotePubkey: c.remote,
-      relays: c.relays,
-      secret: c.secret,
-      pool: state.pool,
-    });
-    return createNip46Identity({ signer, pubkey: c.user });
-  } catch (_) {
-    store.del("gl_nip46");
-    return null;
-  }
-}
-
-function finishSignerLogin({ clientSecretKey, remotePubkey, relays, secret, userPubkey, signer }) {
-  state.identity = createNip46Identity({ signer, pubkey: userPubkey });
-  store.del("gl_sk");
-  store.del("gl_ext");
-  store.del("gl_passkey");
-  saveNip46({ clientSecretKey, remotePubkey, relays, secret, userPubkey });
-  closeModal();
-  toast("Signed in with your signer");
-  startApp();
-}
-
-async function connectWithBunker(input) {
-  const { signer, pubkey, bp, clientSecretKey } = await connectBunkerLink({
-    input,
-    pool: state.pool,
-    metadata: clientMetadata(),
-  });
-  finishSignerLogin({
-    clientSecretKey,
-    remotePubkey: bp.pubkey,
-    relays: bp.relays,
-    secret: bp.secret,
-    userPubkey: pubkey,
-    signer,
-  });
 }
 
 /* ------------------------------ relay layer ------------------------------ */
@@ -550,10 +509,25 @@ async function syncList(l, at) {
       l.type = isHouseholdDoc ? "household" : l.type || "list";
       l.name = data.name;
       l.locked = false;
+      decryptNotes(l);
       saveMeta();
     }
   } catch (_) {
     l.locked = true;
+  }
+}
+
+/** Decrypt each item's NIP-44 note into memory for rendering. */
+function decryptNotes(l) {
+  l.notes = new Map();
+  if (!l.key || !l.data || !Array.isArray(l.data.items)) return;
+  for (const it of l.data.items) {
+    if (!it || !it.note) continue;
+    try {
+      l.notes.set(it.id, decryptNote(l.key, it.note));
+    } catch (_) {
+      l.notes.set(it.id, null); // present but not decryptable
+    }
   }
 }
 
@@ -718,11 +692,21 @@ function sortItems(items) {
 }
 
 function itemHtml(it) {
+  const l = state.lists.get(state.openListId);
+  const note = l?.notes?.get(it.id);
+  const noteLabel = it.note ? "Edit encrypted note" : "Add encrypted note";
+  const noteHtml = it.note
+    ? `<p class="item-note">${
+        note == null ? "Encrypted note (cannot be decrypted with this key)" : escapeHtml(note)
+      }</p>`
+    : "";
   return `
     <li class="item ${it.done ? "done" : ""}" data-id="${it.id}">
       <input class="check" type="checkbox" ${it.done ? "checked" : ""} aria-label="${escapeHtml(it.text)}" />
       <span class="text">${escapeHtml(it.text)}</span>
+      <button class="note" type="button" aria-label="${noteLabel}" title="${noteLabel}">✎</button>
       <button class="del" type="button" aria-label="Delete item">×</button>
+      ${noteHtml}
     </li>`;
 }
 
@@ -1275,21 +1259,23 @@ function b64urlDecode(str) {
 
 /* ------------------------------- modals ---------------------------------- */
 
-function openModal(html, onMount) {
+let modalOnClose = null;
+
+function openModal(html, onMount, onClose = null) {
   modalBody.innerHTML = html;
   modalEl.hidden = false;
   document.body.style.overflow = "hidden";
+  modalOnClose = onClose;
   if (onMount) onMount(modalBody);
 }
 
 function closeModal() {
-  if (signerAbort) {
-    signerAbort.abort();
-    signerAbort = null;
-  }
   modalEl.hidden = true;
   modalBody.innerHTML = "";
   document.body.style.overflow = "";
+  const cb = modalOnClose;
+  modalOnClose = null;
+  if (cb) cb();
 }
 
 function askText({ title, label, placeholder = "", value = "", okLabel = "Create" }) {
@@ -1316,6 +1302,50 @@ function askText({ title, label, placeholder = "", value = "", okLabel = "Create
           closeModal();
           resolve(v || null);
         });
+      }
+    );
+  });
+}
+
+function askNote({ title, label = "", value = "", placeholder = "", okLabel = "Save note" }) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => {
+      if (settled) return;
+      settled = true;
+      resolve(v);
+      closeModal();
+    };
+    openModal(
+      `
+      <h2>${escapeHtml(title)}</h2>
+      ${label ? `<p class="muted small">${escapeHtml(label)}</p>` : ""}
+      <form id="note-form">
+        <label class="field-label" for="note-input">Note</label>
+        <textarea id="note-input" class="input note-input" rows="4" maxlength="2000" placeholder="${escapeHtml(
+          placeholder
+        )}">${escapeHtml(value)}</textarea>
+        <p class="muted small">Notes are encrypted with NIP-44. Leave it empty to remove the note.</p>
+        <div class="share-row">
+          <button id="note-cancel" class="btn btn-block" type="button">Cancel</button>
+          <button class="btn btn-primary btn-block" type="submit">${escapeHtml(okLabel)}</button>
+        </div>
+      </form>`,
+      () => {
+        const input = $("#note-input");
+        input.value = value;
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+        $("#note-form").addEventListener("submit", (e) => {
+          e.preventDefault();
+          done(input.value.trim());
+        });
+        $("#note-cancel").addEventListener("click", () => done(null));
+      },
+      () => {
+        if (settled) return;
+        settled = true;
+        resolve(null);
       }
     );
   });
@@ -1440,6 +1470,42 @@ function openJoinModal() {
   );
 }
 
+/** Add, edit or remove an item's NIP-44 encrypted note. */
+async function editItemNote(itemId) {
+  const l = state.lists.get(state.openListId);
+  if (!l || !l.key) return;
+  const shown = l.data?.items?.find((x) => x.id === itemId);
+  if (!shown) return;
+  const current = l.notes.get(itemId) || "";
+  const text = await askNote({
+    title: "Item note",
+    label: shown.text,
+    value: current,
+    placeholder: "e.g. the large bag, not the small one",
+    okLabel: current ? "Save note" : "Add note",
+  });
+  if (text === null) return;
+  // The list may have synced while the dialog was open; edit the live item.
+  const it = l.data?.items?.find((x) => x.id === itemId);
+  if (!it) return;
+  if (!text) {
+    delete it.note;
+    l.notes.delete(itemId);
+  } else {
+    try {
+      it.note = encryptNote(l.key, text); // NIP-44, readable by every member
+    } catch (e) {
+      toast(e.message || "Could not encrypt the note");
+      return;
+    }
+    l.notes.set(itemId, text);
+  }
+  l.data.updatedAt = Math.floor(Date.now() / 1000);
+  saveMeta();
+  renderDetail(l);
+  queuePublish(l);
+}
+
 async function deleteList(l) {
   const what = isHousehold(l) ? "household" : "list";
   const ok = await confirmAction(
@@ -1515,11 +1581,9 @@ function bindUI() {
   });
 
   // login
-  $("#signer-btn").addEventListener("click", openSignerModal);
   $("#gen-btn").addEventListener("click", () => {
     const id = newLocalIdentity();
     state.identity = id;
-    store.del("gl_nip46");
     store.del("gl_passkey");
     store.set("gl_sk", bytesToHex(id.secretKey));
     const nsec = encodeSecret(id.secretKey);
@@ -1543,7 +1607,6 @@ function bindUI() {
       state.identity = id;
       store.set("gl_sk", bytesToHex(id.secretKey));
       store.del("gl_ext");
-      store.del("gl_nip46");
       store.del("gl_passkey");
       startApp();
     } catch (e) {
@@ -1679,8 +1742,13 @@ function bindUI() {
     });
   });
   $("#items").addEventListener("click", (e) => {
-    if (!e.target.classList.contains("del")) return;
     const li = e.target.closest(".item");
+    if (!li) return;
+    if (e.target.classList.contains("note")) {
+      editItemNote(li.dataset.id);
+      return;
+    }
+    if (!e.target.classList.contains("del")) return;
     mutate((data) => {
       data.items = data.items.filter((x) => x.id !== li.dataset.id);
     });
@@ -1719,95 +1787,8 @@ async function promptNewHousehold() {
   if (name) await createHousehold(name);
 }
 
-function openSignerModal() {
-  if (signerAbort) signerAbort.abort();
-  const ac = new AbortController();
-  signerAbort = ac;
-
-  const { clientSecretKey, clientPubkey, secret, uri } = makeNostrConnect(SIGNER_RELAYS, clientMetadata());
-  const qr = qrSvg(uri, { cellSize: 5, margin: 1 });
-
-  openModal(
-    `
-    <h2>Sign in with a signer</h2>
-    <p class="muted small">
-      Keep your key on your phone. Scan this with <b>Amber</b> (or any NIP-46 signer),
-      then approve the connection.
-    </p>
-    <div class="qr-wrap">${qr}</div>
-    <a class="btn btn-primary btn-block" href="${uri}">Open in signer app</a>
-    <p id="signer-status" class="muted small center signer-note">Waiting for approval…</p>
-    <details class="import-details">
-      <summary>Or paste a bunker:// link instead</summary>
-      <form id="bunker-form" class="import-row">
-        <input id="bunker-input" class="input" placeholder="bunker://…" autocomplete="off" spellcheck="false" />
-        <button class="btn btn-primary" type="submit">Connect</button>
-      </form>
-    </details>
-    <p id="signer-error" class="error" hidden></p>`,
-    () => {
-      $("#bunker-form").addEventListener("submit", async (e) => {
-        e.preventDefault();
-        ac.abort();
-        const err = $("#signer-error");
-        const status = $("#signer-status");
-        const btn = e.submitter || e.target.querySelector("button");
-        btn.disabled = true;
-        err.hidden = true;
-        if (status) status.textContent = "Connecting…";
-        try {
-          await connectWithBunker($("#bunker-input").value);
-        } catch (ex) {
-          err.textContent = ex.message || "Could not connect";
-          err.hidden = false;
-          if (status) status.textContent = "Waiting for approval…";
-          btn.disabled = false;
-        }
-      });
-    }
-  );
-
-  awaitNostrConnect({
-    pool: state.pool,
-    clientSecretKey,
-    clientPubkey,
-    relays: SIGNER_RELAYS,
-    secret,
-    signal: ac.signal,
-  })
-    .then(async (remotePubkey) => {
-      const status = $("#signer-status");
-      if (status) status.textContent = "Approved — finishing…";
-      const signer = createBunkerSigner({
-        clientSecretKey,
-        remotePubkey,
-        relays: SIGNER_RELAYS,
-        secret,
-        pool: state.pool,
-      });
-      const userPubkey = await bunkerUserPubkey(signer);
-      finishSignerLogin({
-        clientSecretKey,
-        remotePubkey,
-        relays: SIGNER_RELAYS,
-        secret,
-        userPubkey,
-        signer,
-      });
-    })
-    .catch((ex) => {
-      if (ac.signal.aborted) return;
-      const err = $("#signer-error");
-      if (err) {
-        err.textContent = ex.message || "Could not connect";
-        err.hidden = false;
-      }
-    });
-}
-
 function openIdentityModal() {
   const npub = hexToNpub(state.identity.pubkey);
-  const viaSigner = state.identity.type === "nip46";
   const viaPasskey = state.identity.type === "passkey";
   openModal(
     `
@@ -1817,11 +1798,6 @@ function openIdentityModal() {
       <code class="copy-code">${npub}</code>
       <button id="id-copy" class="btn" type="button">Copy</button>
     </div>
-    ${
-      viaSigner
-        ? `<p class="signer-badge">📱 Signing via a remote signer (NIP-46). Your key stays on your device.</p>`
-        : ""
-    }
     ${
       viaPasskey
         ? `<p class="signer-badge">🔐 Signing with a passkey. Your key is derived from your passkey and never stored.</p>`
@@ -1839,12 +1815,8 @@ function openIdentityModal() {
       $("#id-signout").addEventListener("click", async () => {
         if (!(await confirmAction("Sign out?", "Your lists stay on relays; you just forget the key here.", "Sign out")))
           return;
-        try {
-          await state.identity.signer?.close();
-        } catch (_) {}
         store.del("gl_sk");
         store.del("gl_ext");
-        store.del("gl_nip46");
         store.del("gl_passkey");
         location.reload();
       });

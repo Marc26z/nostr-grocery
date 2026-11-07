@@ -22,21 +22,9 @@ import {
   nip19,
   nip44,
   nip04,
-  BunkerSigner,
-  parseBunkerInput,
 } from "../vendor/nostr.js";
 
 export const LIST_KIND = 30078; // NIP-78 application-specific data (addressable)
-export const NOSTR_CONNECT_KIND = 24133; // NIP-46 remote-signer messages
-/** Permissions we ask a remote signer to approve on connect. */
-export const NIP46_PERMS = [
-  "get_public_key",
-  "sign_event",
-  "nip44_encrypt",
-  "nip44_decrypt",
-  "nip04_encrypt",
-  "nip04_decrypt",
-].join(",");
 export const LIST_DATA = "grocery-list"; // `t` tag marking a list event
 export const HOUSEHOLD_DATA = "grocery-household"; // `t` tag marking a household event
 export const KEYGRANT_DATA = "grocery-key"; // `t` tag marking a key grant
@@ -112,18 +100,37 @@ export async function decryptList(listKeyHex, payload) {
   return JSON.parse(new TextDecoder().decode(pt));
 }
 
+/* ----------------------------- item notes ------------------------------- */
+
+/**
+ * Items can carry a note (e.g. "the large bag, not the small one"). Notes are
+ * encrypted with NIP-44 v2 under the list's shared key, so every member can
+ * read them without another key exchange, and the ciphertext is what gets
+ * stored in the (already AES-encrypted) list document.
+ */
+export function encryptNote(listKeyHex, text) {
+  const note = String(text ?? "").trim();
+  if (!note) throw new Error("note is empty");
+  return nip44.encrypt(note, hexToBytes(listKeyHex));
+}
+
+export function decryptNote(listKeyHex, payload) {
+  return nip44.decrypt(payload, hexToBytes(listKeyHex));
+}
+
 /** A brand new, empty list object (the plaintext shape). */
 export function emptyList(name = "Groceries") {
   return { v: 1, name, items: [], updatedAt: Math.floor(Date.now() / 1000) };
 }
 
-export function newItem(text) {
+export function newItem(text, note = null) {
   return {
     id: randomHex(8),
     text: String(text).trim(),
     done: false,
     addedBy: null,
     addedAt: Math.floor(Date.now() / 1000),
+    ...(note ? { note } : {}),
   };
 }
 
@@ -437,6 +444,34 @@ export async function passkeySecret({ credentialId, salt = PRF_SALT } = {}) {
 }
 
 /**
+ * Ask the browser for *any* passkey instead of one we know the id of. The
+ * browser shows its account picker — Google Password Manager, iCloud
+ * Keychain, a security key — and the passkey the user picks derives the same
+ * Nostr key on every device the passkey syncs to. Returns the derived secret
+ * key plus the id of the credential that produced it.
+ */
+export async function anyPasskeySecret({ salt = PRF_SALT, mediation = null } = {}) {
+  const publicKey = {
+    challenge: crypto.getRandomValues(new Uint8Array(32)),
+    allowCredentials: [],
+    userVerification: "preferred",
+    extensions: { prf: { eval: { first: salt } } },
+  };
+  const assertion = await navigator.credentials.get(
+    mediation ? { publicKey, mediation } : { publicKey }
+  );
+  if (!assertion) throw new Error("No passkey was chosen");
+  const first = prfFirst(assertion);
+  if (!first) {
+    throw new Error("That passkey can't derive your key (PRF extension unsupported by your browser or provider).");
+  }
+  return {
+    secretKey: await secretFromPrf(first, salt),
+    credentialId: assertion.rawId ? toB64url(new Uint8Array(assertion.rawId)) : null,
+  };
+}
+
+/**
  * Create a passkey-backed identity. Returns the derived secret key plus the
  * credential id — persist the latter to re-derive the same key later.
  */
@@ -467,178 +502,6 @@ export function createPasskeyIdentity(secretKey, credentialId) {
   id.type = "passkey";
   id.credentialId = credentialId;
   return id;
-}
-
-/* ------------------------- remote signers (NIP-46) ----------------------- */
-
-function withTimeout(promise, ms, message) {
-  return new Promise((resolve, reject) => {
-    const t = setTimeout(() => reject(new Error(message || "Timed out")), ms);
-    promise.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e instanceof Error ? e : new Error(String(e)));
-      }
-    );
-  });
-}
-
-/**
- * Build the `nostrconnect://` token a client shows to a mobile signer.
- * Returns the disposable client key, the shared secret and the URI to scan.
- */
-export function makeNostrConnect(relays, { name = "Grocery", url = "", perms = NIP46_PERMS } = {}) {
-  const clientSecretKey = generateSecretKey();
-  const clientPubkey = getPublicKey(clientSecretKey);
-  const secret = randomHex(8);
-  const qs = new URLSearchParams();
-  for (const r of relays) qs.append("relay", r);
-  qs.set("secret", secret);
-  qs.set("perms", perms);
-  if (name) qs.set("name", name);
-  if (url) qs.set("url", url);
-  return { clientSecretKey, clientPubkey, secret, uri: `nostrconnect://${clientPubkey}?${qs.toString()}` };
-}
-
-/** Decrypt a NIP-46 message with the client key (NIP-44, then NIP-04). */
-async function decryptNip46(clientSecretKey, senderPubkey, content) {
-  try {
-    const ck = nip44.getConversationKey(clientSecretKey, senderPubkey);
-    return JSON.parse(nip44.decrypt(content, ck));
-  } catch (_) {
-    return JSON.parse(await nip04.decrypt(clientSecretKey, senderPubkey, content));
-  }
-}
-
-/**
- * Wait for the signer to answer a `nostrconnect://` handshake. Resolves with
- * the remote-signer pubkey once a response carries our secret.
- */
-export function awaitNostrConnect({
-  pool,
-  clientSecretKey,
-  clientPubkey,
-  relays,
-  secret,
-  timeout = 120000,
-  signal,
-}) {
-  return new Promise((resolve, reject) => {
-    let sub;
-    const finish = (fn) => {
-      clearTimeout(timer);
-      try {
-        sub?.close();
-      } catch (_) {}
-      signal?.removeEventListener("abort", onAbort);
-      fn();
-    };
-    const onAbort = () => finish(() => reject(new Error("Cancelled")));
-    const timer = setTimeout(() => finish(() => reject(new Error("Timed out waiting for the signer"))), timeout);
-    sub = pool.subscribeMany(relays, [{ kinds: [NOSTR_CONNECT_KIND], "#p": [clientPubkey] }], {
-      onevent: async (ev) => {
-        try {
-          const msg = await decryptNip46(clientSecretKey, ev.pubkey, ev.content);
-          if (msg && msg.result === secret) finish(() => resolve(ev.pubkey));
-        } catch (_) {
-          /* not a message we can read */
-        }
-      },
-    });
-    if (signal) {
-      if (signal.aborted) onAbort();
-      else signal.addEventListener("abort", onAbort);
-    }
-  });
-}
-
-/** Create a BunkerSigner that talks to `remotePubkey` over `relays`. */
-export function createBunkerSigner({ clientSecretKey, remotePubkey, relays, secret = null, pool }) {
-  const bp = { pubkey: remotePubkey, relays, secret: secret || null };
-  return new BunkerSigner(clientSecretKey, bp, pool ? { pool } : {});
-}
-
-/** Learn the user pubkey a signer signs for (asks it to sign nothing). */
-export function bunkerUserPubkey(signer, timeout = 60000) {
-  return withTimeout(signer.getPublicKey(), timeout, "The signer did not respond");
-}
-
-/**
- * Connect to a signer from a `bunker://…` link (signer-initiated flow).
- * Sends the connect request with our perms + metadata, then learns the user
- * pubkey. Returns a ready BunkerSigner.
- */
-export async function connectBunkerLink({
-  input,
-  pool,
-  clientSecretKey = generateSecretKey(),
-  metadata = null,
-  perms = NIP46_PERMS,
-  timeout = 120000,
-}) {
-  const bp = await parseBunkerInput(String(input || "").trim());
-  if (!bp) throw new Error("Enter a valid bunker:// connection string");
-  if (!bp.relays || bp.relays.length === 0) throw new Error("That bunker link has no relay");
-  const signer = createBunkerSigner({
-    clientSecretKey,
-    remotePubkey: bp.pubkey,
-    relays: bp.relays,
-    secret: bp.secret,
-    pool,
-  });
-  try {
-    const params = [bp.pubkey, bp.secret || ""];
-    if (metadata || perms) params.push(perms || "");
-    if (metadata) params.push(JSON.stringify(metadata));
-    await withTimeout(
-      signer.sendRequest("connect", params),
-      timeout,
-      "The signer did not approve the connection"
-    );
-    const pubkey = await bunkerUserPubkey(signer, timeout);
-    return { signer, pubkey, bp, clientSecretKey };
-  } catch (e) {
-    try {
-      await signer.close();
-    } catch (_) {}
-    throw e;
-  }
-}
-
-/** A NIP-46 (remote signer) identity: signs and encrypts via the BunkerSigner. */
-export function createNip46Identity({ signer, pubkey }) {
-  return {
-    type: "nip46",
-    pubkey,
-    signer,
-    async signEvent(template) {
-      return signer.signEvent(template);
-    },
-    async encryptTo(pubHex, plaintext) {
-      try {
-        return "glk44:" + (await signer.nip44Encrypt(pubHex, plaintext));
-      } catch (e) {
-        try {
-          return "glk04:" + (await signer.nip04Encrypt(pubHex, plaintext));
-        } catch (_) {
-          throw e;
-        }
-      }
-    },
-    async decryptFrom(pubHex, payload) {
-      const [tag, ct] = splitPayload(payload);
-      if (tag === "glk04") return signer.nip04Decrypt(pubHex, ct);
-      return signer.nip44Decrypt(pubHex, ct);
-    },
-    nip44: {
-      encrypt: (pubHex, plaintext) => signer.nip44Encrypt(pubHex, plaintext),
-      decrypt: (pubHex, ciphertext) => signer.nip44Decrypt(pubHex, ciphertext),
-    },
-  };
 }
 
 /* ------------------------------ npub utils ------------------------------- */

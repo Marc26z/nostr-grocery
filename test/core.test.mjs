@@ -4,6 +4,8 @@ import {
   newLocalIdentity,
   encryptList,
   decryptList,
+  encryptNote,
+  decryptNote,
   emptyList,
   newItem,
   randomHex,
@@ -17,13 +19,7 @@ import {
   decodeSecret,
   encodeSecret,
   shortNpub,
-  makeNostrConnect,
-  createNip46Identity,
-  NIP46_PERMS,
 } from "../src/core.js";
-import { getPublicKey, finalizeEvent, verifyEvent } from "nostr-tools/pure";
-import * as nip44 from "nostr-tools/nip44";
-import * as nip04 from "nostr-tools/nip04";
 
 test("list content round-trips through AES-GCM", async () => {
   const key = randomHex(32);
@@ -33,6 +29,15 @@ test("list content round-trips through AES-GCM", async () => {
   const back = await decryptList(key, payload);
   assert.equal(back.name, "Costco run");
   assert.deepEqual(back.items.map((i) => i.text), ["milk", "eggs"]);
+});
+
+test("item notes round-trip through NIP-44 under the list key", () => {
+  const key = randomHex(32);
+  const ciphertext = encryptNote(key, "  the large bag  ");
+  assert.match(ciphertext, /^[A-Za-z0-9+/=]+$/);
+  assert.notEqual(ciphertext, "the large bag");
+  assert.equal(decryptNote(key, ciphertext), "the large bag");
+  assert.throws(() => decryptNote(randomHex(32), ciphertext));
 });
 
 test("a different key cannot decrypt", async () => {
@@ -107,85 +112,4 @@ test("NIP-44 conversation keys are symmetric across identities", async () => {
   // and each can talk to itself (cross-device backup grants)
   const self = await a.encryptTo(a.pubkey, "to self");
   assert.equal(await a.decryptFrom(a.pubkey, self), "to self");
-});
-
-test("makeNostrConnect builds a scannable nostrconnect:// token", () => {
-  const { clientSecretKey, clientPubkey, secret, uri } = makeNostrConnect(
-    ["wss://a.example", "wss://b.example"],
-    { name: "Grocery", perms: NIP46_PERMS }
-  );
-  const m = uri.match(/^nostrconnect:\/\/([0-9a-f]{64})\?(.*)$/);
-  assert.ok(m, "uri should be nostrconnect://<client-pubkey>?…");
-  assert.equal(m[1], clientPubkey);
-  assert.equal(getPublicKey(clientSecretKey), clientPubkey);
-  const qs = new URLSearchParams(m[2]);
-  assert.equal(qs.getAll("relay").length, 2);
-  assert.equal(qs.get("secret"), secret);
-  assert.equal(qs.get("name"), "Grocery");
-  assert.equal(qs.get("perms"), NIP46_PERMS);
-});
-
-test("NIP-46 identity signs and encrypts via the remote signer", async () => {
-  const user = newLocalIdentity();
-  const friend = newLocalIdentity();
-  const signer = {
-    async signEvent(t) {
-      return finalizeEvent(t, user.secretKey);
-    },
-    async nip44Encrypt(pub, pt) {
-      const ck = nip44.getConversationKey(user.secretKey, pub);
-      return nip44.encrypt(pt, ck);
-    },
-    async nip44Decrypt(pub, ct) {
-      const ck = nip44.getConversationKey(user.secretKey, pub);
-      return nip44.decrypt(ct, ck);
-    },
-    async nip04Encrypt(pub, pt) {
-      return nip04.encrypt(user.secretKey, pub, pt);
-    },
-    async nip04Decrypt(pub, ct) {
-      return nip04.decrypt(user.secretKey, pub, ct);
-    },
-  };
-  const id = createNip46Identity({ signer, pubkey: user.pubkey });
-  assert.equal(id.type, "nip46");
-
-  // sign_event delegates to the signer
-  const ev = await id.signEvent({ kind: 30078, created_at: 1, tags: [], content: "encrypted" });
-  assert.equal(ev.pubkey, user.pubkey);
-  assert.equal(verifyEvent(ev), true);
-
-  // key grants handed out by a signer-backed identity open on the other side
-  const ct = await id.encryptTo(friend.pubkey, "secret-list-key");
-  assert.equal(await friend.decryptFrom(id.pubkey, ct), "secret-list-key");
-  const back = await id.decryptFrom(friend.pubkey, "glk44:" + (await nip44.encrypt("reply", nip44.getConversationKey(friend.secretKey, user.pubkey))));
-  assert.equal(back, "reply");
-});
-
-test("NIP-46 identity falls back to NIP-04 when the signer lacks NIP-44", async () => {
-  const user = newLocalIdentity();
-  const friend = newLocalIdentity();
-  const signer = {
-    async signEvent() {
-      throw new Error("n/a");
-    },
-    async nip44Encrypt() {
-      throw new Error("unsupported");
-    },
-    async nip44Decrypt() {
-      throw new Error("unsupported");
-    },
-    async nip04Encrypt(pub, pt) {
-      return nip04.encrypt(user.secretKey, pub, pt);
-    },
-    async nip04Decrypt(pub, ct) {
-      return nip04.decrypt(user.secretKey, pub, ct);
-    },
-  };
-  const id = createNip46Identity({ signer, pubkey: user.pubkey });
-  const ct = await id.encryptTo(friend.pubkey, "list-key");
-  assert.match(ct, /^glk04:/);
-  assert.equal(await friend.decryptFrom(id.pubkey, ct), "list-key");
-  const enc = await nip04.encrypt(friend.secretKey, user.pubkey, "reply");
-  assert.equal(await id.decryptFrom(friend.pubkey, "glk04:" + enc), "reply");
 });

@@ -44,6 +44,9 @@ member ◄─ decrypt K ── read/edit list ────────► relay
   import an existing `nsec`, use a NIP-07 browser extension, or back it with a
   **passkey** (see below). Your key never leaves the browser.
 - **New list** → add items, tick them off, **Clear checked**.
+- **Notes** → the ✎ button on an item attaches a note (e.g. a brand or size).
+  Notes are NIP-44 encrypted with the list's shared key, so every member can
+  read them; leave the note empty to remove it.
 - **Share** → paste someone's `npub`/`nprofile`. They receive the encrypted key
   and the list appears on their side.
 - **List key** → the Share dialog also shows a paste-able **list key**
@@ -76,16 +79,6 @@ Everything is one encrypted JSON document (`{type: "household", products, stock}
 published as a `grocery-household` event, so it syncs and shares exactly like a
 list. Older list-only clients ignore it instead of showing an empty list.
 
-## Signing in with a mobile signer (NIP-46)
-
-Your key doesn't have to live in the browser. **Sign in with a signer app**
-shows a QR code for a `nostrconnect://` token — scan it with
-[Amber](https://github.com/greenart7c3/Amber) (or any NIP-46 signer) and approve.
-You can also paste a `bunker://…` connection string instead. Signing and key
-granting then happen on your device, so the browser never holds your key. The
-disposable client key used for the session is stored locally so a reload keeps
-you signed in.
-
 ## Signing in with a passkey (WebAuthn)
 
 You can create an identity backed by a **passkey** instead of an exported `nsec`.
@@ -99,6 +92,11 @@ to write down: it comes back on every device where the passkey is available
   but the credential id; the derived key lives only for the session.
 - On a later visit, **Unlock with your passkey** re-derives the same key after
   the usual passkey prompt.
+- **Sign in with Google (passkey)** asks the browser for *any* passkey it knows
+  — no credential id is pinned, so the browser shows its own account picker
+  (Google Password Manager and friends). Pick the passkey you use for Grocery
+  and it derives the same npub, on this device and on every other device the
+  passkey syncs to. The credential id it used is remembered for next time.
 - Requires a browser and passkey provider that support the WebAuthn `prf`
   extension. If it's missing, the app says so and you can use an `nsec` instead.
 
@@ -109,10 +107,9 @@ to write down: it comes back on every device where the passkey is available
 | file | purpose |
 |---|---|
 | `index.html`, `styles.css`, `app.js` | the app (no build step needed at runtime) |
-| `src/core.js` | the protocol: crypto, event building/parsing, identities incl. NIP-46 (pure, unit-tested) |
-| `src/vendor.js` → `vendor/nostr.js` | `nostr-tools` (incl. `nip46`) bundled into one self-contained file |
-| `src/qr.js` → `vendor/qr.js` | QR rendering for the `nostrconnect://` login (bundled) |
-| `test/` | Node tests: crypto round-trips **and** jsdom smoke tests of the whole app incl. the signer and passkey flows |
+| `src/core.js` | the protocol: crypto, event building/parsing, identities incl. passkeys (pure, unit-tested) |
+| `src/vendor.js` → `vendor/nostr.js` | `nostr-tools` bundled into one self-contained file |
+| `test/` | Node tests: crypto round-trips **and** jsdom smoke tests of the whole app incl. the passkey flows |
 | `manifest.webmanifest`, `icons/` | PWA manifest + icons (used when wrapping for Zapstore) |
 | `scripts/build-apk.sh` | wrap the web app into an APK with `zapstore/goapk` |
 
@@ -121,14 +118,13 @@ to write down: it comes back on every device where the passkey is available
 Requires Node (for the bundler/tests) and Perl (for the dev server).
 
 ```sh
-npm install          # nostr-tools + esbuild + jsdom (+ qrcode-generator)
-npm run build        # rebuild vendor/nostr.js and vendor/qr.js after changing src/
+npm install          # nostr-tools + esbuild + jsdom
+npm run build        # rebuild vendor/nostr.js after changing src/
 npm test             # crypto tests + headless app smoke test (both sign-in paths)
 npm run serve        # http://localhost:8000
 ```
 
-`vendor/nostr.js` and `vendor/qr.js` are committed, so the deployed site needs
-no build step.
+`vendor/nostr.js` is committed, so the deployed site needs no build step.
 
 ## Deploying the web app
 
@@ -172,6 +168,8 @@ which needs no Android SDK, JDK or Gradle.
   Lists carry `t: grocery-list`; household documents (products + stock) carry
   `t: grocery-household` but share the `grocery:<id>` / key-grant namespace.
 - Symmetric content: AES-256-GCM, `iv ‖ ciphertext`, base64.
+- Item notes: NIP-44 v2 ciphertext, using the list key as the conversation key,
+  stored on the item inside the encrypted list document.
 - Key transport: NIP-44 v2, tagged `glk44:`; NIP-04 fallback, tagged `glk04:`.
 - Data deletion uses a kind `5` ([NIP-09]) event pointing at your own copy.
 

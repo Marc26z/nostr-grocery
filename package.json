@@ -1,11 +1,11 @@
 {
   "name": "nostr-grocery",
-  "version": "1.0.5",
+  "version": "1.0.6",
   "description": "A shared, end-to-end encrypted grocery list and household pantry over Nostr.",
   "type": "module",
   "private": true,
   "scripts": {
-    "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/vendor-marmot.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/marmot.js && esbuild src/qr.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/qr.js",
+    "build": "esbuild src/vendor.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/nostr.js && esbuild src/vendor-marmot.js --bundle --format=esm --target=es2020 --minify --outfile=vendor/marmot.js",
     "serve": "perl serve.pl",
     "test": "node --test --test-force-exit test/core.test.mjs test/household.test.mjs test/marmot.test.mjs test/publish-queue.test.mjs test/app.smoke.mjs test/household.smoke.mjs test/passkey.smoke.mjs"
   },
@@ -14,7 +14,6 @@
     "@internet-privacy/marmot-ts": "^0.5.1",
     "esbuild": "^0.28.2",
     "jsdom": "^30.1.2",
-    "nostr-tools": "^2.10.4",
-    "qrcode-generator": "^2.0.4"
+    "nostr-tools": "^2.10.4"
   }
 }

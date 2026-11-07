@@ -57,7 +57,9 @@ function prfResults() {
 }
 
 function fakeCredentials() {
+  const calls = [];
   return {
+    calls,
     async create() {
       return {
         rawId: Uint8Array.from([1, 2, 3, 4]).buffer,
@@ -65,8 +67,12 @@ function fakeCredentials() {
         getClientExtensionResults: prfResults,
       };
     },
-    async get() {
-      return { getClientExtensionResults: prfResults };
+    async get(options) {
+      calls.push(options);
+      return {
+        rawId: Uint8Array.from([9, 9, 9, 9]).buffer,
+        getClientExtensionResults: prfResults,
+      };
     },
   };
 }
@@ -127,7 +133,7 @@ async function setup() {
     }
     dom.window.close();
   };
-  return { window, dom, cleanup };
+  return { window, dom, cleanup, creds };
 }
 
 function reqFilters(window) {
@@ -135,7 +141,29 @@ function reqFilters(window) {
     .flatMap((s) => s.sent)
     .map((m) => JSON.parse(m))
     .find((m) => m[0] === "REQ");
-  return req ? req.slice(2) : [];
+  if (!req) return [];
+  const filters = req.slice(2);
+  // Older nostr-tools sent one filter per REQ slot, newer ones nest them.
+  return filters.length === 1 && Array.isArray(filters[0]) ? filters[0] : filters;
+}
+
+/** Poll until `fn` returns something truthy — the app is async, the clock isn't. */
+async function waitFor(fn, timeout = 5000) {
+  const deadline = Date.now() + timeout;
+  for (;;) {
+    const value = fn();
+    if (value) return value;
+    if (Date.now() > deadline) return value;
+    await tick(25);
+  }
+}
+
+/** The npubs the app subscribed to, once it has subscribed to ours. */
+async function subscribedAuthors(window) {
+  return waitFor(() => {
+    const authors = reqFilters(window).flatMap((f) => f.authors || []);
+    return authors.length ? authors : null;
+  });
 }
 
 test("creates an identity backed by a passkey (WebAuthn PRF)", async () => {
@@ -150,14 +178,14 @@ test("creates an identity backed by a passkey (WebAuthn PRF)", async () => {
     assert.match(btn.textContent, /Create an identity with a passkey/);
 
     btn.click();
-    await tick(200);
+    await waitFor(() => window.document.querySelector("#lists-view").hidden === false);
     assert.equal(window.document.querySelector("#lists-view").hidden, false, "should sign in");
 
     const saved = JSON.parse(window.localStorage.getItem("gl_passkey"));
     assert.ok(saved && saved.id, "the credential id should be persisted");
 
     const me = await expectedPubkey();
-    const authors = reqFilters(window).flatMap((f) => f.authors || []);
+    const authors = await subscribedAuthors(window);
     assert.ok(authors.includes(me), "the subscription should watch the derived npub");
 
     // The identity is reported as passkey-backed.
@@ -181,12 +209,41 @@ test("unlocks an existing passkey identity to the same npub", async () => {
     assert.match(btn.textContent, /Unlock with your passkey/);
 
     btn.click();
-    await tick(200);
+    await waitFor(() => window.document.querySelector("#lists-view").hidden === false);
     assert.equal(window.document.querySelector("#lists-view").hidden, false, "should sign in");
 
     const me = await expectedPubkey();
-    const authors = reqFilters(window).flatMap((f) => f.authors || []);
+    const authors = await subscribedAuthors(window);
     assert.ok(authors.includes(me), "unlock should re-derive the same npub");
+  } finally {
+    cleanup();
+  }
+});
+
+test("signs in with a Google passkey the browser already knows", async () => {
+  const { window, cleanup, creds } = await setup();
+  try {
+    window.document.dispatchEvent(new window.Event("DOMContentLoaded"));
+    await tick(20);
+
+    const btn = window.document.querySelector("#google-passkey-btn");
+    assert.equal(btn.hidden, false, "the Google passkey button should show when WebAuthn is available");
+    assert.match(btn.textContent, /Sign in with Google/);
+
+    btn.click();
+    await waitFor(() => window.document.querySelector("#lists-view").hidden === false);
+    assert.equal(window.document.querySelector("#lists-view").hidden, false, "should sign in");
+
+    // No credential is pinned: the browser shows its own account picker.
+    const call = creds.calls.at(-1);
+    assert.deepEqual(call.publicKey.allowCredentials, []);
+
+    const me = await expectedPubkey();
+    const authors = await subscribedAuthors(window);
+    assert.ok(authors.includes(me), "the subscription should watch the derived npub");
+
+    const saved = JSON.parse(window.localStorage.getItem("gl_passkey"));
+    assert.ok(saved && saved.id, "the credential id should be remembered");
   } finally {
     cleanup();
   }
