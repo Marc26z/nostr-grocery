@@ -28,9 +28,12 @@ data while keeping it private from the relays. This app does it with two layers:
    client discovers it, decrypts the key, and can now read and edit the list.
 
 Members find their lists by subscribing to the events tagged with their own
-`p` key. Edits are last-write-wins by `created_at`, which is plenty for a
-grocery list. Metadata (which npubs share a list) is visible to relays; the
-contents never are.
+`p` key, plus the `d` tag of every list whose key they already have — so a list
+joined by key keeps syncing after a reload. Edits are last-write-wins by
+`created_at`, and a client bumps its own writes past the newest version it has
+seen so a slightly skewed device clock cannot silently discard an edit.
+Metadata (which npubs share a list) is visible to relays; the contents never
+are.
 
 ```
 owner ── AES-GCM(list, K) ──► relay           (kind 30078, d=grocery:<id>, p=members)

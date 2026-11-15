@@ -84,7 +84,6 @@ const state = {
   sub: null,
   lists: new Map(), // listId -> list
   grants: new Map(), // listId -> parsed key grant (latest)
-  extraFilters: [], // targeted filters for imported invite links
   openListId: null,
   publishTimers: new Map(),
   marmot: null,
@@ -342,7 +341,6 @@ function loginError(msg) {
 function startApp() {
   state.grants = new Map();
   state.lists = new Map();
-  state.extraFilters = [];
 
   const meta = loadMeta();
   for (const [id, m] of Object.entries(meta)) {
@@ -401,6 +399,17 @@ function isHousehold(l) {
 
 /* ------------------------------ relay layer ------------------------------ */
 
+/**
+ * Subscribe by `d` tag to every list whose key we already have locally. A list
+ * joined by key is not necessarily tagged with our `p` pubkey, so the general
+ * `#p`/`authors` filters would stop updating it after a reload. Rebuilding this
+ * from persisted metadata keeps those lists live across sessions.
+ */
+function knownListFilters() {
+  const dTags = [...state.lists.values()].filter((l) => l.key).map((l) => listDTag(l.id));
+  return dTags.length ? [{ kinds: [LIST_KIND], "#d": dTags }] : [];
+}
+
 function connect() {
   if (state.sub) state.sub.close();
   if (!state.pool) state.pool = new SimplePool();
@@ -411,10 +420,15 @@ function connect() {
     { kinds: [LIST_KIND], authors: [me] },
     // Gift-wrapped Marmot chat invites (kind 1059) addressed to us.
     { kinds: [1059], "#p": [me] },
-    ...state.extraFilters,
+    ...knownListFilters(),
   ];
+  // SimplePool takes one filter per request. Pass each relay one request per
+  // filter so they are grouped into a single REQ with a valid filter list —
+  // passing the whole array as one "filter" makes strict relays reject the
+  // subscription outright.
+  const requests = RELAYS.flatMap((url) => filters.map((filter) => ({ url, filter })));
   setConn("connecting", "Connecting…");
-  state.sub = state.pool.subscribeMany(RELAYS, filters, {
+  state.sub = state.pool.subscribeMap(requests, {
     onevent: (ev) => {
       if (ev.kind === 1059) handleGiftWrap(ev);
       else ingest(ev);
@@ -1102,6 +1116,16 @@ async function createHousehold(name) {
   await publishGrant(l, state.identity.pubkey); // self-grant across your devices
 }
 
+/** The next created_at to use for a list edit (see publishList). */
+function nextListTimestamp(l) {
+  const now = Math.floor(Date.now() / 1000);
+  const prev = Number(l.createdAt) || 0;
+  // Follow the last version we saw, but don't let a wildly future clock push
+  // every later edit permanently into the future.
+  if (prev >= now && prev - now < 10 * 60) return prev + 1;
+  return now;
+}
+
 async function publishList(l) {
   if (!l.key || !l.data) return;
   const ev = await makeListEvent(state.identity, {
@@ -1109,6 +1133,10 @@ async function publishList(l) {
     members: [...l.members],
     listKeyHex: l.key,
     data: l.data,
+    // Keep our writes strictly newer than the last version we saw. Without
+    // this, a device whose clock is a little behind can publish an edit that
+    // relays (and the other device) treat as older and discard.
+    createdAt: nextListTimestamp(l),
   });
   l.createdAt = ev.created_at;
   l.author = state.identity.pubkey;
@@ -1161,7 +1189,8 @@ async function shareWith(input) {
   }
   if (recipient === state.identity.pubkey) throw new Error("That's your own key.");
   l.members.add(recipient);
-  renderDetail(l); // reflect the new member immediately
+  saveMeta(); // remember the member even if publishing fails
+  render(); // reflect the new member immediately (lists and households)
   await publishGrant(l, recipient); // hand them the key
   await publishList(l); // add their p tag so they discover it
   const group = state.marmotGroups.get(l.id);
@@ -1220,11 +1249,6 @@ function joinWithKey(input) {
   if (isHexKey(inv.o, 64)) l.owner = inv.o;
   state.lists.set(inv.l, l);
   saveMeta();
-  if (l.owner) {
-    const filt = { kinds: [LIST_KIND], authors: [l.owner], "#d": [listDTag(inv.l)] };
-    const sig = JSON.stringify(filt);
-    if (!state.extraFilters.some((f) => JSON.stringify(f) === sig)) state.extraFilters.push(filt);
-  }
   if (state.pool) connect(); // re-subscribe so the shared list is fetched right now
   scheduleRender();
   return l;
