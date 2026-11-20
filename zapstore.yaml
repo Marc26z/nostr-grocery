@@ -10,6 +10,7 @@
 # `repository` points at where the signed APK release lives.
 repository: https://github.com/Marc26z/nostr-grocery
 pubkey: npub1marc26z8nh3xkj5rcx7ufkatvx6ueqhp5vfw9v5teq26z254renshtf3g0
+icon: icons/icon-512.png
 
 # The APK is produced by zapstore/goapk (see README) and attached to a GitHub
 # release. zapstore picks up `.apk` release assets automatically. To publish a
